@@ -2,6 +2,7 @@
 
 Запуск:  uvicorn app.server:app --host 0.0.0.0 --port 8000
 """
+import hashlib
 import json
 import os
 import queue
@@ -66,6 +67,11 @@ def _worker() -> None:
             job = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             _set_job(job_id, status="processing", message="Конвертация и отправка в VoiceLab")
             res = prepare.process(UPLOADS / job["filename"], DATA, c, args)
+            if res.get("duplicate_of"):  # другой файл, но звук тот же, что у уже расшифрованного видео
+                (UPLOADS / job["filename"]).unlink(missing_ok=True)
+                _set_job(job_id, status="duplicate", video=res["duplicate_of"], segments=0,
+                         message=f"Тот же звук, что у {res['duplicate_of']}: VoiceLab не вызывался")
+                continue
             prepare.write_manifest(c, DATA)
             _set_job(job_id, status="done", video=res["video"], segments=res["segments"],
                      message=f"Сегментов: {res['segments']}, коротких отброшено: {res['short']}")
@@ -99,12 +105,20 @@ async def upload(file: UploadFile = File(...)):
     dst, i = UPLOADS / f"{stem}{ext}", 1
     while dst.exists():  # одинаковые имена не перезаписываем
         dst, i = UPLOADS / f"{stem}_{i}{ext}", i + 1
+    h = hashlib.sha256()
     with dst.open("wb") as f:
         while chunk := await file.read(1 << 20):
-            f.write(chunk)
+            f.write(chunk); h.update(chunk)
     with conn() as c:
-        job_id = c.execute("INSERT INTO jobs (filename, status, message) VALUES (?, 'queued', 'В очереди')",
-                           (dst.name,)).lastrowid
+        # тот же файл уже загружали: не ставим в очередь, кредиты VoiceLab не тратятся
+        dup = c.execute("SELECT filename, video FROM jobs WHERE sha256 = ? AND status != 'error' ORDER BY id LIMIT 1",
+                        (h.hexdigest(),)).fetchone()
+        if dup:
+            dst.unlink(missing_ok=True)
+            raise HTTPException(409, f"Этот файл уже загружен как {dup['filename']}"
+                                     f"{' (видео ' + dup['video'] + ')' if dup['video'] else ''}")
+        job_id = c.execute("INSERT INTO jobs (filename, status, message, sha256) VALUES (?, 'queued', 'В очереди', ?)",
+                           (dst.name, h.hexdigest())).lastrowid
     _jobs.put(job_id)
     return {"id": job_id, "filename": dst.name}
 
