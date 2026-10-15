@@ -83,6 +83,11 @@
   .tlabel { position: sticky; left: 0; z-index: 3; width: 120px; height: 100%; display: flex; flex-direction: column; justify-content: center;
             padding: 0 8px; background: var(--panel2); border-right: 1px solid var(--line); font-size: 12px; }
   .tlabel i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+  .tlabel .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+  .tlabel .tb { display: none; position: absolute; right: 4px; top: 3px; gap: 2px; }
+  .tlabel:hover .tb { display: flex; }
+  .tlabel .tb button { padding: 0 4px; font-size: 11px; line-height: 16px; }
+  .track.drop { box-shadow: inset 0 0 0 2px var(--sel); }
   .clip { position: absolute; top: 4px; height: 38px; border-radius: 4px; overflow: hidden; cursor: pointer; font-size: 11px; color: #111;
           padding: 3px 8px; white-space: nowrap; text-overflow: ellipsis; border: 1px solid rgba(0,0,0,.35); user-select: none; }
   .clip .t { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
@@ -148,7 +153,7 @@
     <div class="pad" id="insp" hidden>
       <div class="row"><span id="iStatus" class="badge"></span> <b>#<span id="iId"></span></b> <span class="muted" id="iAnn"></span></div>
       <label>Спикер</label>
-      <input id="iSpeaker" list="spkList" style="width:100%"><datalist id="spkList"></datalist>
+      <select id="iSpeaker" style="width:100%" title="Кто говорит (Alt+1…9)"></select>
       <label>Вход / Выход (с)</label>
       <div class="row">
         <input type="number" id="iIn" step="0.05"> <button id="setIn" title="Взять вход из плейхеда (I)">I ⟵</button>
@@ -177,7 +182,7 @@
         <button id="bNext" style="flex:1">Следующий ⟶</button>
       </div>
       <div class="keys">
-        <kbd>Space</kbd> пуск/пауза · <kbd>J</kbd> −2 с · <kbd>←</kbd>/<kbd>→</kbd> клипы · <kbd>I</kbd>/<kbd>O</kbd> вход/выход · <kbd>Enter</kbd> сегмент<br>
+        <kbd>Space</kbd> пуск/пауза · <kbd>J</kbd> −2 с · <kbd>←</kbd>/<kbd>→</kbd> клипы · <kbd>I</kbd>/<kbd>O</kbd> вход/выход · <kbd>Enter</kbd> сегмент · <kbd>Alt</kbd>+<kbd>1…9</kbd> спикер<br>
         <kbd>Ctrl</kbd>+<kbd>Enter</kbd> одобрить · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> брак · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> наложение ·
         <kbd>Ctrl</kbd>+<kbd>S</kbd> сохранить · <kbd>Ctrl</kbd>+<kbd>Space</kbd> пауза · <kbd>Ctrl</kbd>+<kbd>←</kbd> −2 с · <kbd>Ctrl</kbd>+<kbd>↓</kbd> следующий
       </div>
@@ -193,6 +198,7 @@
     <button id="tNext" title="Следующий клип">⏭</button>
     <span id="tc">00:00:00:00</span>
     <button id="tFollow" class="on" title="Таймлайн следует за плейхедом">Следовать</button>
+    <button id="addSpk" title="Добавить дорожку нового спикера">+ Спикер</button>
     <span class="grow"></span>
     <span class="muted">Масштаб</span>
     <input type="range" id="zoom" min="8" max="400" value="60" style="width:160px">
@@ -291,10 +297,58 @@ async function loadTimeline(keepSel) {
   data = await api(`/api/timeline/${encodeURIComponent(video)}`);
   $("srcName").textContent = data.source || data.video;
   $("tlEmpty").hidden = true;
-  $("spkList").innerHTML = data.speakers.map((s) => `<option value="${esc(s)}">`).join("");
+  fillSpeakers();
   renderTracks();
   if (keepSel && sel) { const s = data.segments.find((x) => x.id === sel.id); if (s) select(s, false); }
 }
+
+// ---------- спикеры: метка SPEAKER_xx остаётся, имя задаёт редактор ----------
+const spkShort = (spk) => (spk || "—").replace(data.video + "_", "");
+const spkName = (spk) => data.speaker_names[spk] || spkShort(spk);
+const spkFull = (spk) => data.speaker_names[spk] ? `${spkShort(spk)} · ${data.speaker_names[spk]}` : spkShort(spk);
+function fillSpeakers() {
+  const cur = $("iSpeaker").value;
+  $("iSpeaker").innerHTML = data.speakers.map((s, i) =>
+    `<option value="${esc(s)}">${i < 9 ? i + 1 + ". " : ""}${esc(spkFull(s))}</option>`).join("") +
+    `<option value="__new">+ Новый спикер…</option>`;
+  if (data.speakers.includes(cur)) $("iSpeaker").value = cur;
+}
+function applySpeakers(r) { data.speakers = r.speakers; data.speaker_names = r.speaker_names; fillSpeakers(); renderTracks(); }
+async function addSpeaker() {
+  const r = await api(`/api/speakers/${encodeURIComponent(video)}`, { method: "POST" });
+  applySpeakers(r);
+  return r.speaker;
+}
+async function renameSpeaker(spk) {
+  const name = prompt(`Кто это? Имя для ${spkShort(spk)} (пусто = только метка)`, data.speaker_names[spk] || "");
+  if (name === null) return;
+  applySpeakers(await api(`/api/speakers/${encodeURIComponent(video)}/${encodeURIComponent(spk)}`,
+    { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }));
+}
+async function mergeSpeaker(spk) {
+  const others = data.speakers.filter((s) => s !== spk);
+  if (!others.length) return alert("Других спикеров нет");
+  const n = prompt(`Перенести все реплики ${spkFull(spk)} к спикеру:\n` +
+    others.map((s, i) => `${i + 1}. ${spkFull(s)}`).join("\n"), "1");
+  const into = others[+n - 1];
+  if (!into) return;
+  if (dirty && !confirm("Несохранённые правки текущего клипа пропадут. Продолжить?")) return;
+  dirty = false;
+  await api(`/api/speakers/${encodeURIComponent(video)}/${encodeURIComponent(spk)}/merge`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ into }) });
+  await loadTimeline(true);
+}
+async function setSpeaker(spk) {  // переназначить выбранный клип и сразу сохранить
+  if (!sel || !spk || spk === sel.speaker) return;
+  $("iSpeaker").value = spk; dirty = true; await save();
+}
+$("addSpk").onclick = () => video && addSpeaker();
+$("iSpeaker").onchange = async () => {
+  if ($("iSpeaker").value === "__new") {
+    const spk = await addSpeaker(); $("iSpeaker").value = spk;
+  }
+  dirty = true;
+};
 
 const spkColor = (spk) => COLORS[Math.max(0, data.speakers.indexOf(spk)) % COLORS.length];
 const stColor = { pending: "#6e7681", approved: "#3fb950", rejected: "#f85149", overlap: "#a371f7" };
@@ -305,8 +359,15 @@ function renderTracks() {
   const width = x(data.duration) + 80;
   $("tlInner").style.width = width + "px";
   $("tracks").innerHTML = data.speakers.map((spk, i) => `<div class="track" data-spk="${esc(spk)}">
-      <div class="tlabel"><span><i style="background:${spkColor(spk)}"></i>${esc(spk.replace(data.video + "_", ""))}</span>
-      <span class="muted">${data.segments.filter((s) => s.speaker === spk).length} клипов</span></div></div>`).join("");
+      <div class="tlabel"><span class="nm" title="Дважды щёлкните, чтобы дать имя"><i style="background:${spkColor(spk)}"></i>${esc(spkName(spk))}</span>
+      <span class="muted nm" title="${i < 9 ? "Alt+" + (i + 1) + ": отдать выбранный клип этому спикеру" : ""}">${data.speaker_names[spk] ? esc(spkShort(spk)) + " · " : ""}${data.segments.filter((s) => s.speaker === spk).length} кл.${i < 9 ? " · Alt+" + (i + 1) : ""}</span>
+      <span class="tb"><button data-act="name" title="Дать имя">✎</button><button data-act="merge" title="Перенести все реплики к другому спикеру">⇄</button></span></div></div>`).join("");
+  document.querySelectorAll(".track").forEach((tr) => {
+    const spk = tr.dataset.spk;
+    tr.querySelector(".nm").ondblclick = () => renameSpeaker(spk);
+    tr.querySelector("[data-act=name]").onclick = () => renameSpeaker(spk);
+    tr.querySelector("[data-act=merge]").onclick = () => mergeSpeaker(spk);
+  });
   const rows = Object.fromEntries([...document.querySelectorAll(".track")].map((el) => [el.dataset.spk, el]));
   for (const s of data.segments) {
     const el = document.createElement("div");
@@ -366,7 +427,7 @@ function movePlayhead() {
   $("tc").textContent = tc(t);
   // субтитр текущей реплики поверх видео
   const cur = data.segments.filter((s) => t >= s.start && t <= s.end);
-  $("subtitle").innerHTML = cur.map((s) => `<small>${esc(s.speaker.replace(data.video + "_", ""))}</small>${esc(sel && sel.id === s.id ? $("text").value : s.text)}`).join("<br>");
+  $("subtitle").innerHTML = cur.map((s) => `<small>${esc(spkName(s.speaker))}</small>${esc(sel && sel.id === s.id ? $("text").value : s.text)}`).join("<br>");
   if (follow && !v.paused) {
     const px = x(t) - tl.scrollLeft;
     if (px > tl.clientWidth - 60 || px < LABEL) tl.scrollLeft = x(t) - LABEL - 40;
@@ -420,7 +481,22 @@ function clipDown(e, s, el) {
   e.preventDefault(); e.stopPropagation();
   const edge = e.target.classList.contains("l") ? "l" : e.target.classList.contains("r") ? "r" : null;
   if (!sel || sel.id !== s.id) { if (!select(s)) return; }
-  if (!edge) { segEnd = null; v.currentTime = s.start; return; }
+  if (!edge) {  // перетаскивание клипа на дорожку другого спикера = «это говорит он»
+    segEnd = null; v.currentTime = s.start;
+    let target = null;
+    const move = (ev) => {
+      const tr = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".track");
+      target = tr && tr.dataset.spk !== s.speaker && Math.abs(ev.clientY - e.clientY) > 8 ? tr : null;
+      document.querySelectorAll(".track.drop").forEach((t) => t !== target && t.classList.remove("drop"));
+      if (target) target.classList.add("drop");
+    };
+    const up = () => {
+      removeEventListener("mousemove", move); removeEventListener("mouseup", up);
+      if (target) { target.classList.remove("drop"); setSpeaker(target.dataset.spk); }
+    };
+    addEventListener("mousemove", move); addEventListener("mouseup", up);
+    return;
+  }
   el.classList.add("drag");
   const r = tl.getBoundingClientRect();
   const move = (ev) => {
@@ -451,6 +527,7 @@ function showInspector(s) {
   if (!s) { $("segInfo").textContent = ""; return; }
   $("iStatus").className = "badge b-" + s.status; $("iStatus").textContent = s.status;
   $("iId").textContent = s.id; $("iAnn").textContent = s.annotator ? "· " + s.annotator : "";
+  if (s.speaker && !data.speakers.includes(s.speaker)) { data.speakers.push(s.speaker); fillSpeakers(); }
   $("iSpeaker").value = s.speaker || "";
   $("iIn").value = s.start.toFixed(2); $("iOut").value = s.end.toFixed(2);
   $("text").value = s.text ?? s.auto_text ?? "";
@@ -472,7 +549,6 @@ function boundsChanged() {
   draw();
 }
 $("iIn").oninput = $("iOut").oninput = () => sel && boundsChanged();
-$("iSpeaker").oninput = () => dirty = true;
 $("setIn").onclick = () => { if (!sel) return; $("iIn").value = Math.min(v.currentTime, +$("iOut").value - 0.2).toFixed(2); boundsChanged(); };
 $("setOut").onclick = () => { if (!sel) return; $("iOut").value = Math.max(v.currentTime, +$("iIn").value + 0.2).toFixed(2); boundsChanged(); };
 $("playSeg").onclick = playSeg;
@@ -545,6 +621,9 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "ArrowLeft") { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 2); }
     else if (e.key === "ArrowDown") { e.preventDefault(); nextPending(); }
     return;
+  }
+  if (e.altKey && /^Digit[1-9]$/.test(e.code)) {
+    e.preventDefault(); setSpeaker(data && data.speakers[+e.code.slice(5) - 1]); return;
   }
   if (typing) return;
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }

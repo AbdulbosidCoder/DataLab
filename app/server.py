@@ -273,8 +273,61 @@ def timeline(video: str):
             duration = r.getnframes() / r.getframerate()
     src = _source(video)
     return {"video": video, "duration": duration or max((s["end"] for s in segs), default=0),
-            "source": src.name if src else None, "segments": segs,
-            "speakers": sorted({s["speaker"] for s in segs if s["speaker"]})}
+            "source": src.name if src else None, "segments": segs, **_speakers(video, segs)}
+
+
+# ---------- спикеры: метки SPEAKER_xx остаются, редактор даёт имена и переназначает ----------
+
+def _speakers(video: str, segs: list[dict] | None = None) -> dict:
+    with conn() as c:
+        if segs is None:
+            segs = [dict(r) for r in c.execute("SELECT speaker FROM segments WHERE video = ?", (video,))]
+        rows = c.execute("SELECT speaker, name FROM speakers WHERE video = ?", (video,)).fetchall()
+    ids = {s["speaker"] for s in segs if s["speaker"]} | {r["speaker"] for r in rows}
+    return {"speakers": sorted(ids), "speaker_names": {r["speaker"]: r["name"] for r in rows if r["name"]}}
+
+
+class SpeakerIn(BaseModel):
+    name: str | None = None
+
+
+class MergeIn(BaseModel):
+    into: str
+
+
+@app.post("/api/speakers/{video}")
+def add_speaker(video: str):
+    """Новый пустой спикер со следующим номером: <video>_SPEAKER_NN."""
+    existing = _speakers(video)["speakers"]
+    nums = [int(s.rsplit("_", 1)[1]) for s in existing if s.rsplit("_", 1)[-1].isdigit()]
+    spk = f"{video}_SPEAKER_{(max(nums) + 1 if nums else 0):02d}"
+    with conn() as c:
+        c.execute("INSERT OR IGNORE INTO speakers (video, speaker) VALUES (?, ?)", (video, spk))
+    return {"speaker": spk, **_speakers(video)}
+
+
+@app.put("/api/speakers/{video}/{speaker}")
+def name_speaker(video: str, speaker: str, body: SpeakerIn):
+    """Имя спикера (например, «Ali»); пустое имя возвращает просто метку."""
+    name = (body.name or "").strip() or None
+    with conn() as c:
+        c.execute("INSERT INTO speakers (video, speaker, name) VALUES (?, ?, ?) "
+                  "ON CONFLICT(video, speaker) DO UPDATE SET name = excluded.name", (video, speaker, name))
+    return _speakers(video)
+
+
+@app.post("/api/speakers/{video}/{speaker}/merge")
+def merge_speaker(video: str, speaker: str, body: MergeIn):
+    """Все реплики спикера переходят к другому (когда VoiceLab разделил одного человека на двоих)."""
+    if body.into == speaker:
+        raise HTTPException(400, "Нельзя объединить спикера с самим собой")
+    if body.into not in _speakers(video)["speakers"]:
+        raise HTTPException(404, "Спикер не найден")
+    with conn() as c:
+        n = c.execute("UPDATE segments SET speaker = ?, updated_at = CURRENT_TIMESTAMP WHERE video = ? AND speaker = ?",
+                      (body.into, video, speaker)).rowcount
+        c.execute("DELETE FROM speakers WHERE video = ? AND speaker = ?", (video, speaker))
+    return {"moved": n, **_speakers(video)}
 
 
 @app.get("/api/next")
@@ -308,9 +361,11 @@ def audio(seg_id: int):
 @app.get("/api/export.jsonl", response_class=PlainTextResponse)
 def export(status: str = "approved"):
     with conn() as c:
+        names = db.speaker_names(c)
         rows = c.execute("SELECT * FROM segments WHERE status = ? ORDER BY video, start", (status,))
         lines = [json.dumps({"audio_filepath": r["audio_path"], "duration": r["duration"], "text": r["text"],
-                             "speaker": r["speaker"], "video": r["video"]}, ensure_ascii=False) for r in rows]
+                             "speaker": r["speaker"], "speaker_name": names.get((r["video"], r["speaker"])),
+                             "video": r["video"]}, ensure_ascii=False) for r in rows]
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""), media_type="application/x-ndjson",
                              headers={"Content-Disposition": f'attachment; filename="{status}.jsonl"'})
 

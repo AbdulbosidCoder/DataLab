@@ -34,6 +34,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Спикеры видео: метка SPEAKER_xx остаётся в segments.speaker, здесь только имя от редактора
+CREATE TABLE IF NOT EXISTS speakers (
+    video       TEXT NOT NULL,
+    speaker     TEXT NOT NULL,
+    name        TEXT,
+    PRIMARY KEY (video, speaker)
+);
 """
 
 
@@ -55,3 +63,11 @@ def insert_segments(conn: sqlite3.Connection, rows: list[dict]) -> int:
     )
     conn.commit()
     return cur.rowcount
+
+
+def speaker_names(conn: sqlite3.Connection, video: str | None = None) -> dict:
+    """{(video, speaker): name} для спикеров, которым редактор дал имя."""
+    sql, params = "SELECT video, speaker, name FROM speakers WHERE name IS NOT NULL AND name != ''", []
+    if video:
+        sql += " AND video = ?"; params.append(video)
+    return {(r["video"], r["speaker"]): r["name"] for r in conn.execute(sql, params)}
