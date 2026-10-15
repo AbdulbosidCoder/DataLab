@@ -1,7 +1,19 @@
 services:
-  prepare:
+  web:                      # веб-интерфейс: http://localhost:8000
     build: .
-    image: datalab-prepare
+    image: datalab
     env_file: .env          # VOICELAB_API_KEY=vlk_...
     volumes:
-      - ./data:/data        # data/videos -> вход, всё остальное в data/ -> результат
+      - ./data:/data        # загруженные видео, аудио, сегменты, расшифровки и БД
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  prepare:                  # пакетная обработка data/videos без браузера
+    build: .
+    image: datalab
+    profiles: ["cli"]
+    env_file: .env
+    volumes:
+      - ./data:/data
+    entrypoint: ["python", "-m", "pipeline.prepare", "--videos", "/data/videos", "--out", "/data"]

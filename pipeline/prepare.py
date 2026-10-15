@@ -212,7 +212,7 @@ def write_manifest(conn, out: Path) -> int:
     return len(rows)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--videos", default="data/videos", help="папка с MP4 (или один файл)")
     ap.add_argument("--out", default="data", help="куда сохранять аудио, сегменты и расшифровки")
@@ -227,7 +227,11 @@ def main() -> None:
     ap.add_argument("--upload-format", choices=["wav", "flac", "mp3"], default="wav",
                     help="в каком формате отправлять аудио в VoiceLab")
     ap.add_argument("--force", action="store_true", help="заново конвертировать и транскрибировать")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     voicelab.load_env(args.env)
     src = Path(args.videos)

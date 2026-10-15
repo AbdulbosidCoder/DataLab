@@ -22,11 +22,23 @@ CREATE TABLE IF NOT EXISTS segments (
 );
 CREATE INDEX IF NOT EXISTS idx_segments_status ON segments(status);
 CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video);
+
+-- Загрузки из веб-интерфейса: файл -> очередь обработки VoiceLab
+CREATE TABLE IF NOT EXISTS jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename    TEXT NOT NULL,
+    video       TEXT,
+    status      TEXT NOT NULL DEFAULT 'queued',  -- queued / processing / done / error
+    message     TEXT,
+    segments    INTEGER,
+    created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     return conn

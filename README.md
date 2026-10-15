@@ -1,6 +1,7 @@
 # DataLab — узбекский речевой датасет
 
-MP4 → wav 16 kHz mono → транскрипция **VoiceLab STT** (текст + спикеры) → сегменты 1.5–15 с → SQLite + файлы.
+MP4 → wav 16 kHz mono → транскрипция **VoiceLab STT** (текст + спикеры) → сегменты 1.5–15 с → SQLite + файлы
+→ проверка и правка текста каждого сегмента в веб-интерфейсе.
 
 ## Установка
 
@@ -12,12 +13,11 @@ cp .env.example .env      # Windows: copy .env.example .env
 # в .env впишите VOICELAB_API_KEY=vlk_...
 ```
 
-## Запуск
-
-Положите видео в `data/videos/` и запустите:
+## Запуск без Docker
 
 ```bash
-python -m pipeline.prepare
+uvicorn app.server:app --port 8000   # веб-интерфейс
+python -m pipeline.prepare           # или пакетно: видео из data/videos/
 ```
 
 Флаги: `--videos`, `--out`, `--language uz`, `--min-dur 1.5`, `--max-dur 15`, `--max-gap 0.5`,
@@ -27,18 +27,28 @@ python -m pipeline.prepare
 Ответ VoiceLab кэшируется в `transcripts/<video>.voicelab.json`, поэтому повторный запуск
 не отправляет видео заново и не тратит кредиты (кроме `--force`).
 
-## Запуск в Docker
+## Веб-интерфейс (Docker)
 
 Нужен только Docker (Python и ffmpeg уже внутри образа).
 
 ```bash
 cp .env.example .env              # Windows: copy .env.example .env, впишите ключ
-docker compose build
-docker compose run --rm prepare   # видео из data/videos, результат в data/
-docker compose run --rm prepare --keep-overlap --upload-format mp3   # флаги передаются как есть
+docker compose up -d --build      # открыть http://localhost:8000
 ```
 
-Папка `data/` монтируется в контейнер, поэтому аудио, сегменты и расшифровки остаются у вас на диске.
+1. Перетащите видео или аудио в блок «Загрузить». Файл встанет в очередь, VoiceLab его расшифрует
+   (статус виден в блоке «Обработка»), сегменты появятся в списке.
+2. Нажмите «Следующий»: играет аудио сегмента, рядом соседние реплики, ниже текст для правки.
+3. Исправьте текст и нажмите «Одобрить» (`Ctrl+Enter`), «Брак» (`Ctrl+Shift+X`) или «Наложение» (`Ctrl+Shift+O`).
+   `Ctrl+Space` пауза, `Ctrl+←` назад 2 с, `Ctrl+↓` пропустить. Кнопки `oʻ gʻ ʼ` и «Исправить апострофы»
+   помогают с узбекской латиницей; интерфейс предупреждает о цифрах и кириллице.
+4. «Скачать approved.jsonl» отдаёт проверенные сегменты.
+
+Пакетная обработка папки `data/videos` без браузера:
+
+```bash
+docker compose run --rm prepare   # флаги передаются как есть, например --upload-format mp3
+```
 
 ## Что получается в `data/`
 
