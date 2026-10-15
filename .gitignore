@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+data/*
+!data/videos/
+data/videos/*
+!data/videos/.gitkeep
