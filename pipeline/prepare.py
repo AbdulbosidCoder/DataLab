@@ -61,8 +61,11 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         f = upload_file(wav, args.upload_format, Path(tmp))
         print(f"  VoiceLab: отправка {f.name} ({f.stat().st_size / 1e6:.1f} MB) ...")
+        with wave.open(str(wav), "rb") as r:
+            duration = r.getnframes() / r.getframerate()
         result = voicelab.transcribe(f, language=args.language,
-                                     include_speakers=not args.no_speakers)
+                                     include_speakers=not args.no_speakers, duration_s=duration,
+                                     state_file=cache.with_suffix(".pending.json"))
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
