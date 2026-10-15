@@ -45,8 +45,9 @@ def build_zip(conn: sqlite3.Connection, data: Path, dst: Path, source_for, video
     if videos is None:
         videos = [r[0] for r in conn.execute("SELECT DISTINCT video FROM segments ORDER BY video")]
     all_rows, counts = [], {"videos": 0, "segments": 0}
-    # медиа уже сжаты, поэтому без компрессии: быстрее и почти того же размера
-    with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
+    # медиа уже сжаты, поэтому без компрессии: быстрее и почти того же размера;
+    # strict_timestamps=False: файлы с датой до 1980 (бывает после копирования) не роняют сборку
+    with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True, strict_timestamps=False) as z:
         for video in videos:
             sql, params = "SELECT * FROM segments WHERE video = ?", [video]
             if status:
