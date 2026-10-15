@@ -27,6 +27,19 @@ python -m pipeline.prepare
 Ответ VoiceLab кэшируется в `transcripts/<video>.voicelab.json`, поэтому повторный запуск
 не отправляет видео заново и не тратит кредиты (кроме `--force`).
 
+## Запуск в Docker
+
+Нужен только Docker (Python и ffmpeg уже внутри образа).
+
+```bash
+cp .env.example .env              # Windows: copy .env.example .env, впишите ключ
+docker compose build
+docker compose run --rm prepare   # видео из data/videos, результат в data/
+docker compose run --rm prepare --keep-overlap --upload-format mp3   # флаги передаются как есть
+```
+
+Папка `data/` монтируется в контейнер, поэтому аудио, сегменты и расшифровки остаются у вас на диске.
+
 ## Что получается в `data/`
 
 | Путь | Содержимое |

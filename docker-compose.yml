@@ -1,0 +1,7 @@
+services:
+  prepare:
+    build: .
+    image: datalab-prepare
+    env_file: .env          # VOICELAB_API_KEY=vlk_...
+    volumes:
+      - ./data:/data        # data/videos -> вход, всё остальное в data/ -> результат
