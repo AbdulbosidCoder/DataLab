@@ -165,6 +165,29 @@ class SegmentUpdate(BaseModel):
     status: str | None = None
     annotator: str | None = None
     notes: str | None = None
+    start: float | None = None  # новые границы сегмента в секундах исходного видео
+    end: float | None = None
+
+
+def _full_wav(video: str) -> Path:
+    return DATA / "audio" / f"{video}.wav"
+
+
+def _recut(seg: dict, start: float, end: float) -> dict:
+    """Режет сегмент заново из полного аудио по новым границам."""
+    wav = _full_wav(seg["video"])
+    if not wav.exists():
+        raise HTTPException(409, "Полное аудио видео не найдено, границы изменить нельзя")
+    with prepare.wave.open(str(wav), "rb") as r:
+        total = r.getnframes() / r.getframerate()
+    start, end = round(max(0.0, start), 3), round(min(total, end), 3)
+    if end - start < 0.2:
+        raise HTTPException(400, "Сегмент слишком короткий")
+    rel = f"segments/{seg['video']}/{seg['video']}_{int(start * 1000):08d}_{int(end * 1000):08d}.wav"
+    prepare.cut_wav(wav, DATA / rel, start, end)
+    if rel != seg["audio_path"]:
+        (DATA / seg["audio_path"]).unlink(missing_ok=True)
+    return {"start": start, "end": end, "duration": round(end - start, 3), "audio_path": rel}
 
 
 @app.put("/api/segments/{seg_id}")
@@ -173,12 +196,79 @@ def update_segment(seg_id: int, body: SegmentUpdate):
     if "status" in fields and fields["status"] not in STATUSES:
         raise HTTPException(400, "Неизвестный статус")
     with conn() as c:
-        _get(c, seg_id)
+        seg = _get(c, seg_id)
+        start, end = fields.pop("start", None), fields.pop("end", None)
+        if start is not None or end is not None:
+            start = seg["start"] if start is None else start
+            end = seg["end"] if end is None else end
+            if abs(start - seg["start"]) > 1e-3 or abs(end - seg["end"]) > 1e-3:
+                fields.update(_recut(seg, start, end))
         if fields:
             sets = ", ".join(f"{k} = :{k}" for k in fields)
             c.execute(f"UPDATE segments SET {sets}, claimed_by = NULL, claimed_at = NULL, "
                       f"updated_at = CURRENT_TIMESTAMP WHERE id = :id", {**fields, "id": seg_id})
         return _get(c, seg_id)
+
+
+# ---------- студия: исходное видео, волна, таймлайн ----------
+
+def _source(video: str) -> Path | None:
+    """Исходный файл видео/аудио, из которого сделаны сегменты."""
+    with conn() as c:
+        r = c.execute("SELECT filename FROM jobs WHERE video = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
+                      (video,)).fetchone()
+    if r and (UPLOADS / r["filename"]).exists():
+        return UPLOADS / r["filename"]
+    for p in sorted(UPLOADS.glob("*")):
+        if p.suffix.lower() in prepare.MEDIA_EXT and prepare.safe_name(p.stem) == video:
+            return p
+    return None
+
+
+@app.get("/media/{video}")
+def media(video: str, audio_only: bool = False):
+    src = None if audio_only else _source(video)
+    path = src or _full_wav(video)
+    if not path.exists():
+        raise HTTPException(404, "Файл не найден")
+    return FileResponse(path)
+
+
+@app.get("/api/waveform/{video}")
+def waveform(video: str, per_sec: int = 50):
+    """Пики громкости для отрисовки волны: per_sec значений на секунду (0..1)."""
+    wav = _full_wav(video)
+    if not wav.exists():
+        raise HTTPException(404, "Аудио не найдено")
+    cache = DATA / "waveforms" / f"{video}_{per_sec}.json"
+    if cache.exists() and cache.stat().st_mtime >= wav.stat().st_mtime:
+        return json.loads(cache.read_text())
+    import array
+    with prepare.wave.open(str(wav), "rb") as r:
+        sr, n = r.getframerate(), r.getnframes()
+        samples = array.array("h", r.readframes(n))
+    step = max(1, sr // per_sec)
+    peaks = [max(map(abs, samples[i:i + step]), default=0) for i in range(0, len(samples), step)]
+    top = max(peaks, default=1) or 1
+    res = {"per_sec": per_sec, "duration": n / sr, "peaks": [round(p / top, 3) for p in peaks]}
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(res))
+    return res
+
+
+@app.get("/api/timeline/{video}")
+def timeline(video: str):
+    with conn() as c:
+        segs = [dict(r) for r in c.execute("SELECT * FROM segments WHERE video = ? ORDER BY start", (video,))]
+    wav = _full_wav(video)
+    duration = 0.0
+    if wav.exists():
+        with prepare.wave.open(str(wav), "rb") as r:
+            duration = r.getnframes() / r.getframerate()
+    src = _source(video)
+    return {"video": video, "duration": duration or max((s["end"] for s in segs), default=0),
+            "source": src.name if src else None, "segments": segs,
+            "speakers": sorted({s["speaker"] for s in segs if s["speaker"]})}
 
 
 @app.get("/api/next")
