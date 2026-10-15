@@ -16,25 +16,31 @@ import sqlite3
 import zipfile
 from pathlib import Path
 
+from app import db
 from pipeline import prepare
 
-MANIFEST_FIELDS = ["audio_filepath", "duration", "text", "auto_text", "speaker", "video",
+MANIFEST_FIELDS = ["audio_filepath", "duration", "text", "auto_text", "speaker", "speaker_name", "video",
                    "start", "end", "status", "annotator"]
 
 
-def _row(r: sqlite3.Row, video: str) -> dict:
+def _row(r: sqlite3.Row, video: str, names: dict) -> dict:
     return {
         "audio_filepath": f"{video}/segments/{Path(r['audio_path']).name}",
         "duration": r["duration"], "text": r["text"] or r["auto_text"] or "", "auto_text": r["auto_text"],
-        "speaker": r["speaker"], "video": video, "start": r["start"], "end": r["end"],
+        "speaker": r["speaker"], "speaker_name": names.get((video, r["speaker"])), "video": video,
+        "start": r["start"], "end": r["end"],
         "status": r["status"], "annotator": r["annotator"],
     }
 
 
+def _who(r: dict) -> str:
+    return f'{r["speaker"]} ({r["speaker_name"]})' if r["speaker_name"] else str(r["speaker"])
+
+
 def _transcripts(rows: list[dict]) -> tuple[str, str]:
     txt = "".join(f'[{prepare.fmt_ts(r["start"], ".")} - {prepare.fmt_ts(r["end"], ".")}] '
-                  f'{r["speaker"]}: {r["text"]}\n' for r in rows)
-    srt = "\n".join(f'{i}\n{prepare.fmt_ts(r["start"])} --> {prepare.fmt_ts(r["end"])}\n{r["speaker"]}: {r["text"]}\n'
+                  f'{_who(r)}: {r["text"]}\n' for r in rows)
+    srt = "\n".join(f'{i}\n{prepare.fmt_ts(r["start"])} --> {prepare.fmt_ts(r["end"])}\n{_who(r)}: {r["text"]}\n'
                     for i, r in enumerate(rows, 1))
     return txt, srt
 
@@ -45,6 +51,7 @@ def build_zip(conn: sqlite3.Connection, data: Path, dst: Path, source_for, video
     if videos is None:
         videos = [r[0] for r in conn.execute("SELECT DISTINCT video FROM segments ORDER BY video")]
     all_rows, counts = [], {"videos": 0, "segments": 0}
+    names = db.speaker_names(conn)
     # медиа уже сжаты, поэтому без компрессии: быстрее и почти того же размера;
     # strict_timestamps=False: файлы с датой до 1980 (бывает после копирования) не роняют сборку
     with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True, strict_timestamps=False) as z:
@@ -61,7 +68,7 @@ def build_zip(conn: sqlite3.Connection, data: Path, dst: Path, source_for, video
                 wav = data / r["audio_path"]
                 if wav.exists():
                     z.write(wav, f"{video}/segments/{wav.name}")
-                    rows.append(_row(r, video))
+                    rows.append(_row(r, video, names))
             src = source_for(video)
             if src and src.exists():
                 z.write(src, f"{video}/video{src.suffix.lower()}")
@@ -97,8 +104,6 @@ def find_source(data: Path, video: str) -> Path | None:
 if __name__ == "__main__":  # python -m app.bundle [--status approved] [--video NAME]
     import argparse
     import os
-
-    from app import db
 
     ap = argparse.ArgumentParser(description="Собрать ZIP: видео, аудио, сегменты, текст")
     ap.add_argument("--data", default=os.environ.get("DATA_DIR", "data"))
