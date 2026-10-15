@@ -13,6 +13,7 @@
     speech_lab.db                      SQLite, таблица segments
 """
 import argparse
+import array
 import json
 import re
 import subprocess
@@ -69,6 +70,78 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
+
+
+FP_STEP = 0.5  # шаг огибающей для отпечатка звука, с
+
+
+def audio_fingerprint(wav: Path) -> dict:
+    """Отпечаток звука: длительность и огибающая средней громкости по 0.5 с (0..255).
+
+    Не зависит от имени файла и контейнера: тот же ролик в MP4 и MKV, перекодированный или
+    скачанный заново, даёт почти ту же огибающую, хотя байты файла и wav различаются.
+    """
+    with wave.open(str(wav), "rb") as r:
+        rate, n = r.getframerate(), r.getnframes()
+        step = int(rate * FP_STEP)
+        # отсчёт от первого звука: разные контейнеры и кодеки добавляют в начало разную тишину
+        head = array.array("h", r.readframes(rate * 10))
+        r.setpos(next((i for i, v in enumerate(head) if abs(v) > 300), 0))
+        peaks = []
+        while chunk := r.readframes(step):
+            a = array.array("h", chunk)
+            peaks.append(sum(map(abs, a)) // len(a) if a else 0)  # средняя громкость окна
+    top = max(peaks, default=0) or 1
+    return {"dur": round(n / rate, 2), "env": bytes(min(255, p * 255 // top) for p in peaks).hex()}
+
+
+def _corr(x: list[int], y: list[int]) -> float:
+    n = min(len(x), len(y))
+    if n < 4:
+        return 0.0
+    x, y = x[:n], y[:n]
+    mx, my = sum(x) / n, sum(y) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    sxx, syy = sum((a - mx) ** 2 for a in x), sum((b - my) ** 2 for b in y)
+    if sxx == 0 or syy == 0:  # тишина или ровный тон: совпадает, только если уровни равны
+        return 1.0 if abs(mx - my) < 3 else 0.0
+    return sxy / (sxx * syy) ** 0.5
+
+
+def same_audio(a: dict, b: dict, min_corr: float = 0.97) -> bool:
+    """Тот же звук: длительность отличается меньше чем на 1 с, огибающие совпадают со сдвигом до ±1 с."""
+    if abs(a["dur"] - b["dur"]) > 1.0:
+        return False
+    x, y = list(bytes.fromhex(a["env"])), list(bytes.fromhex(b["env"]))
+    lags = int(1 / FP_STEP)
+    return max(_corr(x[max(0, k):], y[max(0, -k):]) for k in range(-lags, lags + 1)) >= min_corr
+
+
+def audio_index(out: Path) -> dict:
+    """{видео: отпечаток} для уже расшифрованных видео; старые видео дописываются при первом обращении."""
+    path = out / "transcripts" / "audio_index.json"
+    index = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    changed = False
+    for wav in sorted((out / "audio").glob("*.wav")):
+        if wav.stem not in index and (out / "transcripts" / f"{wav.stem}.voicelab.json").exists():
+            index[wav.stem] = audio_fingerprint(wav)
+            changed = True
+    if changed:
+        save_audio_index(out, index)
+    return index
+
+
+def find_duplicate(out: Path, video: str, fp: dict, index: dict) -> str | None:
+    for other, ofp in index.items():
+        if other != video and (out / "transcripts" / f"{other}.voicelab.json").exists() and same_audio(fp, ofp):
+            return other
+    return None
+
+
+def save_audio_index(out: Path, index: dict) -> None:
+    path = out / "transcripts" / "audio_index.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
 
 
 def raw_utterances(result: dict, video: str) -> list[dict]:
@@ -161,12 +234,31 @@ def process(src: Path, out: Path, conn, args) -> dict:
     video = safe_name(src.stem)
     print(f"[{video}] {src.name}")
     wav = out / "audio" / f"{video}.wav"
-    if not wav.exists() or args.force:
+    created = not wav.exists() or args.force
+    if created:
         to_wav(src, wav)
     with wave.open(str(wav), "rb") as r:
         total = r.getnframes() / r.getframerate()
 
-    result = get_transcription(wav, out / "transcripts" / f"{video}.voicelab.json", args)
+    # тот же звук уже расшифрован под другим именем: не тратим кредиты VoiceLab и не дублируем датасет
+    fp, index = audio_fingerprint(wav), audio_index(out)
+    owner = find_duplicate(out, video, fp, index)
+    cache = out / "transcripts" / f"{video}.voicelab.json"
+    if owner:
+        if not args.allow_duplicates:
+            if created:
+                wav.unlink(missing_ok=True)
+            print(f"  дубликат: тот же звук, что у {owner}; VoiceLab не вызывался")
+            return {"video": video, "duplicate_of": owner, "segments": 0, "hours": 0.0,
+                    "short": 0, "long": 0, "overlap_dropped": 0}
+        if not cache.exists():  # дубль разрешён: берём готовую расшифровку, а не платим ещё раз
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_bytes((out / "transcripts" / f"{owner}.voicelab.json").read_bytes())
+
+    result = get_transcription(wav, cache, args)
+    if index.get(video) != fp:
+        index[video] = fp
+        save_audio_index(out, index)
     utts = raw_utterances(result, video)
     write_transcripts(utts, out / "transcripts" / video)
 
@@ -230,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--upload-format", choices=["wav", "flac", "mp3"], default="wav",
                     help="в каком формате отправлять аудио в VoiceLab")
     ap.add_argument("--force", action="store_true", help="заново конвертировать и транскрибировать")
+    ap.add_argument("--allow-duplicates", action="store_true",
+                    help="обрабатывать видео с уже расшифрованным звуком (расшифровка берётся из кэша)")
     return ap
 
 
@@ -251,6 +345,9 @@ def main() -> None:
             summary.append(process(f, out, conn, args))
         except (voicelab.VoiceLabError, subprocess.CalledProcessError) as e:
             print(f"  ОШИБКА: {e}", file=sys.stderr)
+    dups = [s for s in summary if s.get("duplicate_of")]
+    for s in dups:
+        print(f"Пропущен дубликат: {s['video']} = {s['duplicate_of']}")
     n = write_manifest(conn, out)
     hours = sum(s["hours"] for s in summary)
     print(f"\nГотово: видео {len(summary)}/{len(files)}, сегментов в этом запуске "

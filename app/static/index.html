@@ -36,7 +36,7 @@
   #drop { border: 1px dashed #4b4d55; border-radius: 6px; padding: 14px 8px; text-align: center; color: var(--muted); cursor: pointer; }
   #drop.over { border-color: var(--accent); color: var(--accent); }
   .job { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
-  .st-queued, .st-processing { color: var(--accent); } .st-done { color: var(--ok); } .st-error { color: var(--bad); }
+  .st-queued, .st-processing { color: var(--accent); } .st-done { color: var(--ok); } .st-error { color: var(--bad); } .st-duplicate { color: var(--muted, #8b949e); }
   .clip-item { display: flex; gap: 8px; align-items: center; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
   .clip-item:hover { background: var(--panel2); }
   .clip-item.active { background: #33302a; box-shadow: inset 3px 0 var(--accent); }
@@ -259,7 +259,7 @@ async function uploadFiles(files) {
 let jobsActive = false;
 async function refreshJobs() {
   const jobs = await api("/api/jobs");
-  const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка" };
+  const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка", duplicate: "дубликат" };
   const shown = jobs.filter((j) => j.status !== "done").slice(0, 8);
   $("jobs").innerHTML = shown.map((j) => `<div class="job">${esc(j.filename)}<br>
     <span class="st-${j.status}">${st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");

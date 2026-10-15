@@ -49,6 +49,8 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    if "sha256" not in {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}:  # хэш файла для поиска повторных загрузок
+        conn.execute("ALTER TABLE jobs ADD COLUMN sha256 TEXT")
     return conn
 
 
