@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speech Lab Studio</title>
+<style>
+  :root {
+    --bg: #1b1c1f; --panel: #232428; --panel2: #2a2b30; --line: #34353b; --text: #d7d9de; --muted: #8a8d96;
+    --accent: #e8a33c; --play: #e5484d; --ok: #3fb950; --bad: #f85149; --ov: #a371f7; --pend: #6e7681;
+    --sel: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         display: grid; grid-template-rows: 38px minmax(260px, 56vh) 1fr; overflow: hidden; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: #4b4d55; background: #303137; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  input, select, textarea { background: #151619; border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
+  a { color: var(--accent); text-decoration: none; }
+  .muted { color: var(--muted); }
+
+  /* верхняя панель */
+  header { display: flex; align-items: center; gap: 14px; padding: 0 12px; background: #141517; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
+  header b { font-size: 14px; letter-spacing: .3px; }
+  header .chips span { margin-right: 10px; }
+  header .grow { flex: 1; }
+
+  /* верхняя часть: медиа | просмотр | инспектор */
+  .top { display: grid; grid-template-columns: 250px 1fr 340px; min-height: 0; border-bottom: 1px solid var(--line); }
+  .panel { background: var(--panel); min-height: 0; overflow: auto; }
+  .panel h3 { margin: 0; padding: 8px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--panel2); position: sticky; top: 0; z-index: 1; }
+  .pad { padding: 10px; }
+  #drop { border: 1px dashed #4b4d55; border-radius: 6px; padding: 14px 8px; text-align: center; color: var(--muted); cursor: pointer; }
+  #drop.over { border-color: var(--accent); color: var(--accent); }
+  .job { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+  .st-queued, .st-processing { color: var(--accent); } .st-done { color: var(--ok); } .st-error { color: var(--bad); }
+  .clip-item { display: flex; gap: 8px; align-items: center; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+  .clip-item:hover { background: var(--panel2); }
+  .clip-item.active { background: #33302a; box-shadow: inset 3px 0 var(--accent); }
+  .thumb { width: 44px; height: 28px; border-radius: 3px; background: linear-gradient(135deg, #3a3c44, #26272c); display: grid; place-items: center; font-size: 15px; flex: none; }
+  .prog { height: 3px; background: #3a3b41; border-radius: 2px; margin-top: 3px; }
+  .prog i { display: block; height: 100%; background: var(--ok); border-radius: 2px; }
+
+  .viewer { background: #0e0f11; display: grid; grid-template-rows: 26px 1fr; min-width: 0; min-height: 0; }
+  .viewer .bar { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; color: var(--muted); font-size: 12px; background: var(--panel2); border-bottom: 1px solid var(--line); }
+  .stage { position: relative; display: grid; place-items: center; min-height: 0; overflow: hidden; }
+  video { max-width: 100%; max-height: 100%; background: #000; }
+  .audio-only { position: absolute; inset: 0; display: none; place-items: center; color: var(--muted); font-size: 42px; pointer-events: none; }
+  .stage.noimg .audio-only { display: grid; }
+  #subtitle { position: absolute; left: 50%; bottom: 7%; transform: translateX(-50%); max-width: 86%; text-align: center;
+              font-size: 19px; line-height: 1.35; padding: 4px 12px; background: rgba(0,0,0,.66); border-radius: 4px; color: #fff; }
+  #subtitle:empty { display: none; }
+  #subtitle small { display: block; font-size: 11px; color: #c8cad0; }
+
+  .insp label { display: block; color: var(--muted); font-size: 11px; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .6px; }
+  .insp .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .insp input[type=number] { width: 92px; }
+  #text { width: 100%; min-height: 96px; resize: vertical; font-size: 16px; line-height: 1.4; border-color: #4b4d55; }
+  #text:focus { outline: none; border-color: var(--accent); }
+  .badge { padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 600; color: #111; }
+  .b-pending { background: var(--pend); color: #fff; } .b-approved { background: var(--ok); } .b-rejected { background: var(--bad); } .b-overlap { background: var(--ov); }
+  #warn { color: var(--accent); font-size: 12px; min-height: 16px; margin-top: 4px; }
+  .actions button, #bSave, #bNext { flex: 1; white-space: nowrap; padding: 5px 6px; }
+  .b-ok { background: #1f3d27; border-color: #2c5a37; } .b-bad { background: #46201f; border-color: #6a2d2b; } .b-ovl { background: #33264a; border-color: #4a3870; }
+  .keys { color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: 10px; }
+  kbd { background: #151619; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font-size: 10px; }
+
+  /* таймлайн */
+  .timeline { display: grid; grid-template-rows: 34px 1fr; min-height: 0; background: var(--panel); }
+  .transport { display: flex; align-items: center; gap: 6px; padding: 0 10px; background: var(--panel2); border-bottom: 1px solid var(--line); }
+  #tc { font: 600 15px/1 ui-monospace, "SF Mono", Consolas, monospace; color: var(--accent); min-width: 120px; text-align: center; letter-spacing: 1px; }
+  .transport .grow { flex: 1; }
+  #tl { position: relative; overflow: auto; min-height: 0; }
+  #tlInner { position: relative; min-height: 100%; }
+  #tlCanvas { position: sticky; left: 0; top: 0; display: block; z-index: 2; }
+  .track { position: relative; height: 46px; border-bottom: 1px solid var(--line); }
+  .track:nth-child(odd) { background: #26272b; }
+  .tlabel { position: sticky; left: 0; z-index: 3; width: 120px; height: 100%; display: flex; flex-direction: column; justify-content: center;
+            padding: 0 8px; background: var(--panel2); border-right: 1px solid var(--line); font-size: 12px; }
+  .tlabel i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+  .clip { position: absolute; top: 4px; height: 38px; border-radius: 4px; overflow: hidden; cursor: pointer; font-size: 11px; color: #111;
+          padding: 3px 8px; white-space: nowrap; text-overflow: ellipsis; border: 1px solid rgba(0,0,0,.35); user-select: none; }
+  .clip .t { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+  .clip .s { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; }
+  .clip.sel { outline: 2px solid var(--sel); outline-offset: 0; z-index: 4; }
+  .clip.st-rejected { opacity: .45; }
+  .clip .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
+  .clip .h.l { left: 0; } .clip .h.r { right: 0; }
+  .clip .h:hover, .clip.drag .h { background: rgba(255,255,255,.45); }
+  #playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--play); z-index: 5; pointer-events: none; }
+  #playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--play); }
+  .empty { color: var(--muted); padding: 30px; text-align: center; }
+
+  @media (max-width: 1000px) {
+    body { overflow: auto; grid-template-rows: auto auto auto; }
+    .top { grid-template-columns: 1fr; }
+    .viewer { height: 260px; }
+    .timeline { height: 360px; }
+    header { flex-wrap: wrap; padding: 6px 12px; } header .grow { display: none; }
+    .transport { flex-wrap: wrap; } #zoom { width: 90px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <b>SPEECH LAB · STUDIO</b>
+  <span class="chips muted" id="stats"></span>
+  <span class="grow"></span>
+  <label class="muted">Разметчик <input id="annotator" size="10" placeholder="имя"></label>
+  <a href="/list.html">Список</a>
+  <a href="/api/export.jsonl">Экспорт approved.jsonl</a>
+</header>
+
+<div class="top">
+  <!-- медиа -->
+  <div class="panel">
+    <h3>Медиа</h3>
+    <div class="pad">
+      <div id="drop">⬆ Перетащите видео или аудио<br><small>или нажмите для выбора</small></div>
+      <input type="file" id="file" multiple hidden accept="video/*,audio/*">
+      <div id="upmsg" class="muted" style="margin-top:6px;font-size:12px"></div>
+      <div id="jobs"></div>
+    </div>
+    <div id="videos"></div>
+  </div>
+
+  <!-- просмотр -->
+  <div class="viewer">
+    <div class="bar"><span id="srcName">Нет видео</span><span id="segInfo"></span></div>
+    <div class="stage" id="stage">
+      <video id="v" playsinline preload="auto"></video>
+      <div class="audio-only">♪</div>
+      <div id="subtitle"></div>
+    </div>
+  </div>
+
+  <!-- инспектор -->
+  <div class="panel insp">
+    <h3>Инспектор</h3>
+    <div class="pad" id="inspEmpty"><span class="muted">Выберите клип на таймлайне</span></div>
+    <div class="pad" id="insp" hidden>
+      <div class="row"><span id="iStatus" class="badge"></span> <b>#<span id="iId"></span></b> <span class="muted" id="iAnn"></span></div>
+      <label>Спикер</label>
+      <input id="iSpeaker" list="spkList" style="width:100%"><datalist id="spkList"></datalist>
+      <label>Вход / Выход (с)</label>
+      <div class="row">
+        <input type="number" id="iIn" step="0.05"> <button id="setIn" title="Взять вход из плейхеда (I)">I ⟵</button>
+        <input type="number" id="iOut" step="0.05"> <button id="setOut" title="Взять выход из плейхеда (O)">O ⟵</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button id="playSeg" title="Проиграть сегмент (Enter)">▶ Сегмент</button>
+        <button id="loopBtn" title="Повторять сегмент">⟳ Повтор</button>
+        <span class="muted" id="iDur"></span>
+      </div>
+      <label>Текст</label>
+      <textarea id="text" spellcheck="false"></textarea>
+      <div class="row">
+        <button data-ins="oʻ">oʻ</button><button data-ins="gʻ">gʻ</button><button data-ins="ʼ">ʼ</button>
+        <button id="fixap" title="o' g' → oʻ gʻ, остальные → ʼ">Исправить апострофы</button>
+      </div>
+      <div id="warn"></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">Черновик VoiceLab: <span id="draft"></span> <a href="#" id="restore">вернуть</a></div>
+      <div class="row actions" style="margin-top:12px">
+        <button class="b-ok" id="bApprove">✓ Одобрить</button>
+        <button class="b-bad" id="bReject">✕ Брак</button>
+        <button class="b-ovl" id="bOverlap">⧉ Наложение</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button id="bSave" style="flex:1">Сохранить</button>
+        <button id="bNext" style="flex:1">Следующий ⟶</button>
+      </div>
+      <div class="keys">
+        <kbd>Space</kbd> пуск/пауза · <kbd>J</kbd> −2 с · <kbd>←</kbd>/<kbd>→</kbd> клипы · <kbd>I</kbd>/<kbd>O</kbd> вход/выход · <kbd>Enter</kbd> сегмент<br>
+        <kbd>Ctrl</kbd>+<kbd>Enter</kbd> одобрить · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> брак · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> наложение ·
+        <kbd>Ctrl</kbd>+<kbd>S</kbd> сохранить · <kbd>Ctrl</kbd>+<kbd>Space</kbd> пауза · <kbd>Ctrl</kbd>+<kbd>←</kbd> −2 с · <kbd>Ctrl</kbd>+<kbd>↓</kbd> следующий
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- таймлайн -->
+<div class="timeline">
+  <div class="transport">
+    <button id="tPrev" title="Предыдущий клип">⏮</button>
+    <button id="tPlay" title="Пуск/пауза (Space)">▶</button>
+    <button id="tNext" title="Следующий клип">⏭</button>
+    <span id="tc">00:00:00:00</span>
+    <button id="tFollow" class="on" title="Таймлайн следует за плейхедом">Следовать</button>
+    <span class="grow"></span>
+    <span class="muted">Масштаб</span>
+    <input type="range" id="zoom" min="8" max="400" value="60" style="width:160px">
+    <button id="zFit" title="Вписать всё видео">Вписать</button>
+  </div>
+  <div id="tl">
+    <div id="tlInner">
+      <canvas id="tlCanvas" height="94"></canvas>
+      <div id="tracks"></div>
+      <div id="playhead"></div>
+    </div>
+    <div class="empty" id="tlEmpty">Загрузите видео слева или выберите его в списке</div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (url, opts) => {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+};
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const LABEL = 120, RULER = 24, WAVE = 70, FPS = 25;
+const COLORS = ["#4fa3e0", "#e0a84f", "#5cc489", "#d9739a", "#9b8cf0", "#57c7c2", "#d2c45a", "#e07a5a"];
+const tc = (t) => { const f = Math.floor((t % 1) * FPS), s = Math.floor(t); const p = (n) => String(n).padStart(2, "0");
+  return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}:${p(f)}`; };
+const fmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
+
+const v = $("v"), tl = $("tl"), canvas = $("tlCanvas"), ctx = canvas.getContext("2d");
+let video = store.get("video") || "", data = null, wave = null, pps = +store.get("pps") || 60;
+let sel = null, dirty = false, loop = false, segEnd = null, follow = true;
+$("zoom").value = pps;
+$("annotator").value = store.get("annotator") || "";
+$("annotator").onchange = () => store.set("annotator", $("annotator").value.trim());
+const who = () => $("annotator").value.trim() || "anon";
+
+// ---------- медиа: загрузка, очередь, список видео ----------
+const drop = $("drop");
+drop.onclick = () => $("file").click();
+$("file").onchange = () => uploadFiles($("file").files);
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); uploadFiles(e.dataTransfer.files); };
+
+async function uploadFiles(files) {
+  for (const f of files) {
+    $("upmsg").textContent = `Загрузка ${f.name}…`;
+    const fd = new FormData(); fd.append("file", f);
+    try { await api("/api/upload", { method: "POST", body: fd }); $("upmsg").textContent = `${f.name}: в очереди на VoiceLab`; }
+    catch (e) { $("upmsg").textContent = `Ошибка: ${e.message}`; }
+  }
+  $("file").value = ""; refreshJobs();
+}
+
+let jobsActive = false;
+async function refreshJobs() {
+  const jobs = await api("/api/jobs");
+  const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка" };
+  const shown = jobs.filter((j) => j.status !== "done").slice(0, 8);
+  $("jobs").innerHTML = shown.map((j) => `<div class="job">${esc(j.filename)}<br>
+    <span class="st-${j.status}">${st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
+  const active = jobs.some((j) => j.status === "queued" || j.status === "processing");
+  if (jobsActive && !active) { await refreshStats(); if (!video && jobs[0]?.video) openVideo(jobs[0].video); else if (video) loadTimeline(true); }
+  jobsActive = active;
+}
+
+async function refreshStats() {
+  const s = await api("/api/stats");
+  const n = { pending: "ждут", approved: "одобрено", rejected: "брак", overlap: "наложение" };
+  $("stats").innerHTML = Object.entries(n).map(([k, l]) => `<span>${l}: <b>${(s.by_status[k] || {}).count || 0}</b></span>`).join("");
+  $("videos").innerHTML = `<h3>Видео</h3>` + (s.videos.map((x) => `<div class="clip-item ${x.video === video ? "active" : ""}" data-v="${esc(x.video)}">
+    <div class="thumb">🎬</div><div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">${esc(x.video)}</div>
+    <div class="prog"><i style="width:${x.total ? 100 * x.approved / x.total : 0}%"></i></div>
+    <div class="muted" style="font-size:11px">${x.approved}/${x.total} одобрено</div></div></div>`).join("") || '<div class="empty">Пусто</div>');
+  document.querySelectorAll(".clip-item").forEach((el) => el.onclick = () => openVideo(el.dataset.v));
+  if (!data && s.videos.length) openVideo(s.videos.some((x) => x.video === video) ? video : s.videos[0].video);
+}
+
+// ---------- таймлайн ----------
+async function openVideo(name) {
+  if (dirty && !confirm("Есть несохранённые изменения. Перейти?")) return;
+  video = name; store.set("video", name); sel = null; dirty = false; showInspector(null);
+  document.querySelectorAll(".clip-item").forEach((el) => el.classList.toggle("active", el.dataset.v === name));
+  v.src = `/media/${encodeURIComponent(name)}`;
+  v.onerror = () => { if (!v.src.includes("audio_only")) v.src = `/media/${encodeURIComponent(name)}?audio_only=1`; };
+  wave = null;
+  await loadTimeline();
+  api(`/api/waveform/${encodeURIComponent(name)}`).then((w) => { wave = w; draw(); }).catch(() => {});
+}
+
+async function loadTimeline(keepSel) {
+  data = await api(`/api/timeline/${encodeURIComponent(video)}`);
+  $("srcName").textContent = data.source || data.video;
+  $("tlEmpty").hidden = true;
+  $("spkList").innerHTML = data.speakers.map((s) => `<option value="${esc(s)}">`).join("");
+  renderTracks();
+  if (keepSel && sel) { const s = data.segments.find((x) => x.id === sel.id); if (s) select(s, false); }
+}
+
+const spkColor = (spk) => COLORS[Math.max(0, data.speakers.indexOf(spk)) % COLORS.length];
+const stColor = { pending: "#6e7681", approved: "#3fb950", rejected: "#f85149", overlap: "#a371f7" };
+const x = (t) => LABEL + t * pps;
+const tAt = (px) => Math.max(0, Math.min(data.duration, (px - LABEL) / pps));
+
+function renderTracks() {
+  const width = x(data.duration) + 80;
+  $("tlInner").style.width = width + "px";
+  $("tracks").innerHTML = data.speakers.map((spk, i) => `<div class="track" data-spk="${esc(spk)}">
+      <div class="tlabel"><span><i style="background:${spkColor(spk)}"></i>${esc(spk.replace(data.video + "_", ""))}</span>
+      <span class="muted">${data.segments.filter((s) => s.speaker === spk).length} клипов</span></div></div>`).join("");
+  const rows = Object.fromEntries([...document.querySelectorAll(".track")].map((el) => [el.dataset.spk, el]));
+  for (const s of data.segments) {
+    const el = document.createElement("div");
+    el.className = `clip st-${s.status}` + (sel && sel.id === s.id ? " sel" : "");
+    el.dataset.id = s.id;
+    el.style.cssText = `left:${x(s.start)}px;width:${Math.max(4, (s.end - s.start) * pps)}px;background:${spkColor(s.speaker)}`;
+    el.title = `#${s.id} ${fmt(s.start)}–${fmt(s.end)}\n${s.text || ""}`;
+    el.innerHTML = `<div class="t">${s.status === "approved" ? "✓ " : ""}${esc(s.text || "")}</div>
+      <div class="s" style="background:${stColor[s.status]}"></div><div class="h l"></div><div class="h r"></div>`;
+    (rows[s.speaker] || $("tracks").lastElementChild)?.appendChild(el);
+    el.onmousedown = (e) => clipDown(e, s, el);
+  }
+  draw(); movePlayhead();
+}
+
+function draw() {
+  if (!data) return;
+  const w = tl.clientWidth, sl = tl.scrollLeft, dpr = window.devicePixelRatio || 1;
+  canvas.width = w * dpr; canvas.height = (RULER + WAVE) * dpr; canvas.style.width = w + "px"; canvas.style.height = (RULER + WAVE) + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#1e1f23"; ctx.fillRect(0, 0, w, RULER + WAVE);
+  ctx.fillStyle = "#2a2b30"; ctx.fillRect(0, 0, w, RULER);
+  // линейка
+  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  const major = steps.find((s) => s * pps >= 80) || 600;
+  const t0 = Math.max(0, (sl - LABEL) / pps), t1 = (sl + w) / pps;
+  ctx.strokeStyle = "#55575f"; ctx.fillStyle = "#9a9da6"; ctx.font = "10px ui-monospace, Consolas, monospace";
+  for (let t = Math.floor(t0 / major) * major; t <= t1; t += major / 5) {
+    const px = x(t) - sl, isMajor = Math.abs(t / major - Math.round(t / major)) < 1e-6;
+    ctx.beginPath(); ctx.moveTo(px + .5, isMajor ? 8 : 16); ctx.lineTo(px + .5, RULER); ctx.stroke();
+    if (isMajor) ctx.fillText(tc(t).slice(3, 8), px + 3, 11);
+  }
+  // волна
+  const mid = RULER + WAVE / 2;
+  ctx.fillStyle = "#4e9a6a";
+  if (wave) {
+    const ps = wave.per_sec;
+    for (let px = Math.max(LABEL - sl, 0); px < w; px++) {
+      const a = Math.floor(((px + sl - LABEL) / pps) * ps), b = Math.max(a + 1, Math.floor(((px + 1 + sl - LABEL) / pps) * ps));
+      let m = 0; for (let i = a; i < b && i < wave.peaks.length; i++) m = Math.max(m, wave.peaks[i]);
+      const h = Math.max(1, m * (WAVE / 2 - 4)); ctx.fillRect(px, mid - h, 1, h * 2);
+    }
+  }
+  if (sel) { // выделенный сегмент на волне
+    ctx.fillStyle = "rgba(232,163,60,.18)";
+    const a = x(+$("iIn").value) - sl, b = x(+$("iOut").value) - sl; ctx.fillRect(a, RULER, b - a, WAVE);
+  }
+  ctx.fillStyle = "#2a2b30"; ctx.fillRect(0, RULER, LABEL, WAVE); ctx.fillRect(0, 0, LABEL, RULER);
+  ctx.fillStyle = "#9a9da6"; ctx.font = "11px system-ui"; ctx.fillText("Аудио", 10, mid + 4);
+  ctx.strokeStyle = "#34353b"; ctx.beginPath(); ctx.moveTo(LABEL + .5, 0); ctx.lineTo(LABEL + .5, RULER + WAVE); ctx.stroke();
+}
+
+function movePlayhead() {
+  if (!data) return;
+  const t = v.currentTime || 0;
+  $("playhead").style.left = x(t) + "px";
+  $("tc").textContent = tc(t);
+  // субтитр текущей реплики поверх видео
+  const cur = data.segments.filter((s) => t >= s.start && t <= s.end);
+  $("subtitle").innerHTML = cur.map((s) => `<small>${esc(s.speaker.replace(data.video + "_", ""))}</small>${esc(sel && sel.id === s.id ? $("text").value : s.text)}`).join("<br>");
+  if (follow && !v.paused) {
+    const px = x(t) - tl.scrollLeft;
+    if (px > tl.clientWidth - 60 || px < LABEL) tl.scrollLeft = x(t) - LABEL - 40;
+  }
+}
+
+function tick() {
+  if (segEnd !== null && v.currentTime >= segEnd) {
+    if (loop && sel) v.currentTime = +$("iIn").value; else { v.pause(); segEnd = null; }
+  }
+  movePlayhead();
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+v.onplay = () => $("tPlay").textContent = "⏸";
+v.onpause = () => $("tPlay").textContent = "▶";
+v.onloadedmetadata = () => $("stage").classList.toggle("noimg", !v.videoWidth);
+
+tl.addEventListener("scroll", draw);
+window.addEventListener("resize", draw);
+
+// клик по линейке / волне = перемотка, колёсико с Ctrl = масштаб
+tl.addEventListener("mousedown", (e) => {
+  if (!data || e.target.closest(".clip") || e.target.closest(".tlabel")) return;
+  const r = tl.getBoundingClientRect(), px = e.clientX - r.left + tl.scrollLeft;
+  if (px < LABEL) return;
+  segEnd = null; v.currentTime = tAt(px);
+  const move = (ev) => { v.currentTime = tAt(ev.clientX - r.left + tl.scrollLeft); };
+  const up = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
+  addEventListener("mousemove", move); addEventListener("mouseup", up);
+});
+tl.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey || !data) return;
+  e.preventDefault();
+  const r = tl.getBoundingClientRect(), px = e.clientX - r.left, t = tAt(px + tl.scrollLeft);
+  setZoom(pps * (e.deltaY < 0 ? 1.2 : 1 / 1.2));
+  tl.scrollLeft = x(t) - px;
+}, { passive: false });
+
+function setZoom(z) { pps = Math.max(8, Math.min(400, z)); $("zoom").value = pps; store.set("pps", pps); if (data) renderTracks(); }
+$("zoom").oninput = () => { const t = v.currentTime; setZoom(+$("zoom").value); tl.scrollLeft = x(t) - tl.clientWidth / 2; };
+$("zFit").onclick = () => { if (data) setZoom((tl.clientWidth - LABEL - 30) / Math.max(1, data.duration)); tl.scrollLeft = 0; };
+$("tFollow").onclick = () => { follow = !follow; $("tFollow").classList.toggle("on", follow); };
+$("tPlay").onclick = () => togglePlay();
+$("tPrev").onclick = () => stepClip(-1);
+$("tNext").onclick = () => stepClip(1);
+function togglePlay() { segEnd = null; v.paused ? v.play() : v.pause(); }
+
+// ---------- клипы: выбор и обрезка краёв ----------
+function clipDown(e, s, el) {
+  e.preventDefault(); e.stopPropagation();
+  const edge = e.target.classList.contains("l") ? "l" : e.target.classList.contains("r") ? "r" : null;
+  if (!sel || sel.id !== s.id) { if (!select(s)) return; }
+  if (!edge) { segEnd = null; v.currentTime = s.start; return; }
+  el.classList.add("drag");
+  const r = tl.getBoundingClientRect();
+  const move = (ev) => {
+    const t = Math.round(tAt(ev.clientX - r.left + tl.scrollLeft) * 100) / 100;
+    if (edge === "l") $("iIn").value = Math.min(t, +$("iOut").value - 0.2).toFixed(2);
+    else $("iOut").value = Math.max(t, +$("iIn").value + 0.2).toFixed(2);
+    v.currentTime = edge === "l" ? +$("iIn").value : Math.max(0, +$("iOut").value - 0.5);
+    boundsChanged();
+  };
+  const up = () => { el.classList.remove("drag"); removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
+  addEventListener("mousemove", move); addEventListener("mouseup", up);
+}
+
+function select(s, seek = true) {
+  if (dirty && sel && sel.id !== s.id && !confirm("Есть несохранённые изменения. Перейти без сохранения?")) return false;
+  sel = s; dirty = false;
+  document.querySelectorAll(".clip").forEach((c) => c.classList.toggle("sel", +c.dataset.id === s.id));
+  showInspector(s);
+  if (seek) { segEnd = null; v.currentTime = s.start; }
+  const px = x(s.start) - tl.scrollLeft;
+  if (px < LABEL || px > tl.clientWidth - 80) tl.scrollLeft = x(s.start) - LABEL - 60;
+  draw();
+  return true;
+}
+
+function showInspector(s) {
+  $("insp").hidden = !s; $("inspEmpty").hidden = !!s;
+  if (!s) { $("segInfo").textContent = ""; return; }
+  $("iStatus").className = "badge b-" + s.status; $("iStatus").textContent = s.status;
+  $("iId").textContent = s.id; $("iAnn").textContent = s.annotator ? "· " + s.annotator : "";
+  $("iSpeaker").value = s.speaker || "";
+  $("iIn").value = s.start.toFixed(2); $("iOut").value = s.end.toFixed(2);
+  $("text").value = s.text ?? s.auto_text ?? "";
+  $("draft").textContent = s.auto_text || "—";
+  updDur(); checkText();
+}
+
+function updDur() {
+  const d = +$("iOut").value - +$("iIn").value;
+  $("iDur").textContent = `${d.toFixed(2)} с`;
+  $("iDur").style.color = d > 15 || d < 1.5 ? "var(--accent)" : "";
+  $("segInfo").textContent = sel ? `#${sel.id} · ${fmt(+$("iIn").value)} – ${fmt(+$("iOut").value)}` : "";
+}
+
+function boundsChanged() {
+  dirty = true; updDur();
+  const el = document.querySelector(`.clip[data-id="${sel.id}"]`);
+  if (el) { el.style.left = x(+$("iIn").value) + "px"; el.style.width = ((+$("iOut").value - +$("iIn").value) * pps) + "px"; }
+  draw();
+}
+$("iIn").oninput = $("iOut").oninput = () => sel && boundsChanged();
+$("iSpeaker").oninput = () => dirty = true;
+$("setIn").onclick = () => { if (!sel) return; $("iIn").value = Math.min(v.currentTime, +$("iOut").value - 0.2).toFixed(2); boundsChanged(); };
+$("setOut").onclick = () => { if (!sel) return; $("iOut").value = Math.max(v.currentTime, +$("iIn").value + 0.2).toFixed(2); boundsChanged(); };
+$("playSeg").onclick = playSeg;
+$("loopBtn").onclick = () => { loop = !loop; $("loopBtn").classList.toggle("on", loop); };
+function playSeg() { if (!sel) return; v.currentTime = +$("iIn").value; segEnd = +$("iOut").value; v.play(); }
+
+function stepClip(dir) {
+  if (!data || !data.segments.length) return;
+  const t = sel ? sel.start : v.currentTime;
+  const list = data.segments;
+  const s = dir > 0 ? list.find((c) => c.start > t + 1e-3) : [...list].reverse().find((c) => c.start < t - 1e-3);
+  if (s && select(s)) playSeg();
+}
+
+// ---------- текст ----------
+document.querySelectorAll("[data-ins]").forEach((b) => b.onclick = () => insert(b.dataset.ins));
+function insert(s) {
+  const t = $("text"), a = t.selectionStart, z = t.selectionEnd;
+  t.value = t.value.slice(0, a) + s + t.value.slice(z); t.selectionStart = t.selectionEnd = a + s.length; t.focus(); textChanged();
+}
+const APOS = /['`‘’´ʹ]/;
+$("fixap").onclick = () => { $("text").value = $("text").value.replace(/([oOgG])['`‘’´ʹʼ]/g, (_, c) => c + "ʻ").replace(/['`‘’´ʹ]/g, "ʼ"); textChanged(); };
+$("restore").onclick = (e) => { e.preventDefault(); if (sel) { $("text").value = sel.auto_text || ""; textChanged(); } };
+$("text").oninput = textChanged;
+function textChanged() { dirty = true; checkText(); }
+function checkText() {
+  const t = $("text").value, w = [];
+  if (/\d/.test(t)) w.push("цифры → словами");
+  if (/[А-Яа-яЁё]/.test(t)) w.push("кириллица");
+  if (APOS.test(t)) w.push("неверные апострофы");
+  if (!t.trim()) w.push("пустой текст");
+  $("warn").textContent = w.length ? "⚠ " + w.join(" · ") : "";
+}
+
+// ---------- сохранение ----------
+async function save(status) {
+  if (!sel) return;
+  const body = { text: $("text").value.trim(), speaker: $("iSpeaker").value.trim(), annotator: who(),
+                 start: +$("iIn").value, end: +$("iOut").value };
+  if (status) body.status = status;
+  try {
+    const s = await api(`/api/segments/${sel.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    dirty = false; sel = s;
+    await loadTimeline(true); refreshStats();
+    if (status) nextPending();
+  } catch (e) { alert("Не сохранено: " + e.message); }
+}
+function nextPending() {
+  const t = sel ? sel.start : -1;
+  const list = data.segments.filter((s) => s.status === "pending");
+  const s = list.find((c) => c.start > t) || list[0];
+  if (s && select(s)) playSeg();
+}
+$("bApprove").onclick = () => save("approved");
+$("bReject").onclick = () => save("rejected");
+$("bOverlap").onclick = () => save("overlap");
+$("bSave").onclick = () => save();
+$("bNext").onclick = nextPending;
+
+// ---------- горячие клавиши ----------
+document.addEventListener("keydown", (e) => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  const k = e.key.toLowerCase();
+  if (e.ctrlKey) {
+    if (e.key === "Enter") { e.preventDefault(); save("approved"); }
+    else if (e.shiftKey && k === "x") { e.preventDefault(); save("rejected"); }
+    else if (e.shiftKey && k === "o") { e.preventDefault(); save("overlap"); }
+    else if (k === "s") { e.preventDefault(); save(); }
+    else if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 2); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); nextPending(); }
+    return;
+  }
+  if (typing) return;
+  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+  else if (k === "j") v.currentTime = Math.max(0, v.currentTime - 2);
+  else if (k === "k") v.pause();
+  else if (k === "l") { segEnd = null; v.play(); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); stepClip(-1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); stepClip(1); }
+  else if (k === "i") $("setIn").click();
+  else if (k === "o") $("setOut").click();
+  else if (e.key === "Enter") playSeg();
+});
+window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+refreshJobs(); refreshStats();
+setInterval(refreshJobs, 3000);
+</script>
+</body>
+</html>

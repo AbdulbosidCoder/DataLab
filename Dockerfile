@@ -10,7 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ app/
 COPY pipeline/ pipeline/
 
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 DATA_DIR=/data
 # Видео и результаты лежат в /data (монтируется с хоста), ключ приходит из env (.env через compose).
 VOLUME /data
-ENTRYPOINT ["python", "-m", "pipeline.prepare", "--videos", "/data/videos", "--out", "/data"]
+EXPOSE 8000
+# По умолчанию веб-интерфейс; пакетная обработка папки: docker compose run --rm prepare
+CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"]

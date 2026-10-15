@@ -61,8 +61,11 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         f = upload_file(wav, args.upload_format, Path(tmp))
         print(f"  VoiceLab: отправка {f.name} ({f.stat().st_size / 1e6:.1f} MB) ...")
+        with wave.open(str(wav), "rb") as r:
+            duration = r.getnframes() / r.getframerate()
         result = voicelab.transcribe(f, language=args.language,
-                                     include_speakers=not args.no_speakers)
+                                     include_speakers=not args.no_speakers, duration_s=duration,
+                                     state_file=cache.with_suffix(".pending.json"))
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -212,7 +215,7 @@ def write_manifest(conn, out: Path) -> int:
     return len(rows)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--videos", default="data/videos", help="папка с MP4 (или один файл)")
     ap.add_argument("--out", default="data", help="куда сохранять аудио, сегменты и расшифровки")
@@ -227,7 +230,11 @@ def main() -> None:
     ap.add_argument("--upload-format", choices=["wav", "flac", "mp3"], default="wav",
                     help="в каком формате отправлять аудио в VoiceLab")
     ap.add_argument("--force", action="store_true", help="заново конвертировать и транскрибировать")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     voicelab.load_env(args.env)
     src = Path(args.videos)
