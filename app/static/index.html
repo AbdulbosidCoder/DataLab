@@ -40,6 +40,8 @@
   .clip-item { display: flex; gap: 8px; align-items: center; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
   .clip-item:hover { background: var(--panel2); }
   .clip-item.active { background: #33302a; box-shadow: inset 3px 0 var(--accent); }
+  .zip { font-size: 11px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; flex: none; }
+  .zip:hover { border-color: var(--accent); }
   .thumb { width: 44px; height: 28px; border-radius: 3px; background: linear-gradient(135deg, #3a3c44, #26272c); display: grid; place-items: center; font-size: 15px; flex: none; }
   .prog { height: 3px; background: #3a3b41; border-radius: 2px; margin-top: 3px; }
   .prog i { display: block; height: 100%; background: var(--ok); border-radius: 2px; }
@@ -111,7 +113,9 @@
   <span class="grow"></span>
   <label class="muted">Разметчик <input id="annotator" size="10" placeholder="имя"></label>
   <a href="/list.html">Список</a>
-  <a href="/api/export.jsonl">Экспорт approved.jsonl</a>
+  <a href="/api/export.zip" title="Все видео: видео, аудио, сегменты, текст">⬇ ZIP всё</a>
+  <a href="/api/export.zip?status=approved" title="Только одобренные сегменты">⬇ ZIP одобренные</a>
+  <a href="/api/export.jsonl">approved.jsonl</a>
 </header>
 
 <div class="top">
@@ -265,7 +269,8 @@ async function refreshStats() {
   $("videos").innerHTML = `<h3>Видео</h3>` + (s.videos.map((x) => `<div class="clip-item ${x.video === video ? "active" : ""}" data-v="${esc(x.video)}">
     <div class="thumb">🎬</div><div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">${esc(x.video)}</div>
     <div class="prog"><i style="width:${x.total ? 100 * x.approved / x.total : 0}%"></i></div>
-    <div class="muted" style="font-size:11px">${x.approved}/${x.total} одобрено</div></div></div>`).join("") || '<div class="empty">Пусто</div>');
+    <div class="muted" style="font-size:11px">${x.approved}/${x.total} одобрено</div></div>
+    <a class="zip" href="/api/export.zip?video=${encodeURIComponent(x.video)}" title="Скачать ZIP: видео, аудио, сегменты, текст" onclick="event.stopPropagation()">⬇ ZIP</a></div>`).join("") || '<div class="empty">Пусто</div>');
   document.querySelectorAll(".clip-item").forEach((el) => el.onclick = () => openVideo(el.dataset.v));
   if (!data && s.videos.length) openVideo(s.videos.some((x) => x.video === video) ? video : s.videos[0].video);
 }
