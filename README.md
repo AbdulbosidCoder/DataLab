@@ -47,7 +47,13 @@ docker compose up -d --build      # открыть http://localhost:8000
 
 Клавиши: `Space` пуск/пауза, `J`/`K`/`L`, `←`/`→` предыдущий/следующий клип, `I`/`O` вход/выход, `Enter` проиграть сегмент,
 `Ctrl+Enter` одобрить, `Ctrl+Shift+X` брак, `Ctrl+Shift+O` наложение, `Ctrl+S` сохранить, `Ctrl+↓` следующий непроверенный.
-Простой список сегментов: http://localhost:8000/list.html. «Экспорт approved.jsonl» отдаёт проверенные сегменты.
+Простой список сегментов: http://localhost:8000/list.html.
+
+**Скачать всё одним ZIP.** Кнопка «⬇ ZIP» у видео, «⬇ ZIP всё» и «⬇ ZIP одобренные» в шапке. Внутри архива:
+`<video>/video.mp4` (исходник), `<video>/audio.wav`, `<video>/segments/*.wav`, `<video>/transcript.txt` и `.srt`
+(с правками разметчиков), `<video>/segments.jsonl`, `<video>/voicelab.json`, плюс общие `manifest.jsonl` и `manifest.csv`.
+Копия архива остаётся в `data/exports/`. Без браузера: `python -m app.bundle [--status approved] [--video NAME]`
+(в Docker: `docker compose run --rm --entrypoint python prepare -m app.bundle`). «Экспорт approved.jsonl» отдаёт проверенные сегменты.
 
 Пакетная обработка папки `data/videos` без браузера:
 
@@ -65,5 +71,6 @@ docker compose run --rm prepare   # флаги передаются как ес�
 | `transcripts/<video>.voicelab.json` | сырой ответ VoiceLab |
 | `manifest.jsonl` | все сегменты: `audio_filepath`, `duration`, `text`, `speaker`, `video`, `status` |
 | `speech_lab.db` | SQLite, таблица `segments` (схема speech-lab) |
+| `exports/*.zip` | архивы «видео + аудио + сегменты + текст», собранные кнопкой ZIP |
 
 `speaker` = `<video>_SPEAKER_xx`, потому что VoiceLab нумерует спикеров заново в каждом видео.

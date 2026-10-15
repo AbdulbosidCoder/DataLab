@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import db
+from app import bundle, db
 from pipeline import prepare, voicelab
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -307,6 +307,24 @@ def export(status: str = "approved"):
                              "speaker": r["speaker"], "video": r["video"]}, ensure_ascii=False) for r in rows]
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""), media_type="application/x-ndjson",
                              headers={"Content-Disposition": f'attachment; filename="{status}.jsonl"'})
+
+
+@app.get("/api/export.zip")
+def export_zip(video: str | None = None, status: str | None = None):
+    """Всё в одном архиве: видео, аудио, сегменты, текст. Копия остаётся в data/exports/."""
+    if status and status not in STATUSES:
+        raise HTTPException(400, "Неизвестный статус")
+    name = f"{video or 'speech_lab_all'}{'_' + status if status else ''}.zip"
+    dst = DATA / "exports" / name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(".part")
+    with conn() as c:
+        counts = bundle.build_zip(c, DATA, tmp, _source, [video] if video else None, status)
+    if not counts["segments"]:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(404, "Нет сегментов для архива")
+    tmp.replace(dst)
+    return FileResponse(dst, media_type="application/zip", filename=name)
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
