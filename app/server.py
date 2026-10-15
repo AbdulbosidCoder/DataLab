@@ -6,13 +6,16 @@ import json
 import os
 import queue
 import threading
+import time
 import traceback
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from app import bundle, db
@@ -79,6 +82,9 @@ def _start_worker() -> None:
     with conn() as c:  # задачи, прерванные перезапуском сервера, ставим в очередь заново
         for r in c.execute("SELECT id FROM jobs WHERE status IN ('queued', 'processing') ORDER BY id"):
             _jobs.put(r["id"])
+    exports = DATA / "exports"  # недособранные архивы и ссылки для скачивания от прошлого запуска
+    for p in [*exports.glob(".*.part"), *exports.glob(".serve/*.zip")]:
+        p.unlink(missing_ok=True)
     threading.Thread(target=_worker, daemon=True).start()
 
 
@@ -309,6 +315,10 @@ def export(status: str = "approved"):
                              headers={"Content-Disposition": f'attachment; filename="{status}.jsonl"'})
 
 
+_zip_locks: dict[str, threading.Lock] = {}
+_zip_locks_guard = threading.Lock()
+
+
 @app.get("/api/export.zip")
 def export_zip(video: str | None = None, status: str | None = None):
     """Всё в одном архиве: видео, аудио, сегменты, текст. Копия остаётся в data/exports/."""
@@ -317,14 +327,34 @@ def export_zip(video: str | None = None, status: str | None = None):
     name = f"{video or 'speech_lab_all'}{'_' + status if status else ''}.zip"
     dst = DATA / "exports" / name
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_suffix(".part")
-    with conn() as c:
-        counts = bundle.build_zip(c, DATA, tmp, _source, [video] if video else None, status)
-    if not counts["segments"]:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(404, "Нет сегментов для архива")
-    tmp.replace(dst)
-    return FileResponse(dst, media_type="application/zip", filename=name)
+    asked_at = time.time()
+    with _zip_locks_guard:
+        lock = _zip_locks.setdefault(name, threading.Lock())
+    # повторный клик или повторный запрос браузера ждёт уже идущую сборку и отдаёт её результат
+    with lock:
+        if not (dst.exists() and dst.stat().st_mtime >= asked_at):
+            tmp = dst.with_name(f".{name}.{uuid.uuid4().hex}.part")
+            try:
+                with conn() as c:
+                    counts = bundle.build_zip(c, DATA, tmp, _source, [video] if video else None, status)
+                if not counts["segments"]:
+                    raise HTTPException(404, "Нет сегментов для архива")
+                tmp.replace(dst)
+            except OSError as e:
+                traceback.print_exc()
+                raise HTTPException(500, f"Не удалось собрать архив: {e}") from e
+            finally:
+                tmp.unlink(missing_ok=True)
+        # отдаём отдельную жёсткую ссылку, чтобы следующая пересборка не подменила файл посреди скачивания
+        serve, cleanup = dst, None
+        link = dst.parent / ".serve" / f"{uuid.uuid4().hex}.zip"
+        try:
+            link.parent.mkdir(exist_ok=True)
+            os.link(dst, link)
+            serve, cleanup = link, BackgroundTask(link.unlink, missing_ok=True)
+        except OSError:
+            pass
+    return FileResponse(serve, media_type="application/zip", filename=name, background=cleanup)
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
