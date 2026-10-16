@@ -207,9 +207,50 @@ def _recut(seg: dict, start: float, end: float) -> dict:
         raise HTTPException(400, "Сегмент слишком короткий")
     rel = f"segments/{seg['video']}/{seg['video']}_{int(start * 1000):08d}_{int(end * 1000):08d}.wav"
     prepare.cut_wav(wav, DATA / rel, start, end)
-    if rel != seg["audio_path"]:
+    if seg["audio_path"] and rel != seg["audio_path"]:
         (DATA / seg["audio_path"]).unlink(missing_ok=True)
     return {"start": start, "end": end, "duration": round(end - start, 3), "audio_path": rel}
+
+
+class SegmentNew(BaseModel):
+    video: str
+    start: float
+    end: float
+    speaker: str | None = None
+    text: str = ""
+    annotator: str | None = None
+    # для отмены удаления: вернуть сегмент как был
+    auto_text: str = ""
+    status: str = "pending"
+    notes: str | None = "добавлен вручную"
+
+
+@app.post("/api/segments")
+def create_segment(body: SegmentNew):
+    """Новый сегмент вручную: речь, которую VoiceLab пропустил. wav режется из полного аудио."""
+    cut = _recut({"video": body.video, "audio_path": ""}, body.start, body.end)
+    with conn() as c:
+        if c.execute("SELECT 1 FROM segments WHERE audio_path = ?", (cut["audio_path"],)).fetchone():
+            raise HTTPException(409, "Сегмент с такими же границами уже есть")
+        if body.status not in STATUSES:
+            raise HTTPException(400, "Неизвестный статус")
+        seg_id = c.execute(
+            "INSERT INTO segments (video, audio_path, start, end, duration, speaker, auto_text, text, status, annotator, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (body.video, cut["audio_path"], cut["start"], cut["end"], cut["duration"], body.speaker, body.auto_text,
+             body.text.strip(), body.status, body.annotator, body.notes),
+        ).lastrowid
+        return _get(c, seg_id)
+
+
+@app.delete("/api/segments/{seg_id}")
+def delete_segment(seg_id: int):
+    """Удаляет сегмент и его wav. Отменить можно, создав его заново по возвращённым данным."""
+    with conn() as c:
+        seg = _get(c, seg_id)
+        c.execute("DELETE FROM segments WHERE id = ?", (seg_id,))
+    (DATA / seg["audio_path"]).unlink(missing_ok=True)
+    return seg
 
 
 @app.put("/api/segments/{seg_id}")
