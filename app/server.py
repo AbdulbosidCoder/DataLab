@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import queue
+import shutil
+import sqlite3
 import threading
 import time
 import traceback
@@ -370,6 +372,122 @@ def audio(seg_id: int):
     if DATA not in path.parents or not path.exists():
         raise HTTPException(404, "Аудио не найдено")
     return FileResponse(path, media_type="audio/wav")
+
+
+# ---------- очистка с корзиной: всё уходит в data/trash/<время>/ и возвращается одной кнопкой ----------
+
+TRASH = DATA / "trash"
+DATA_PARTS = ["videos", "audio", "segments", "transcripts", "waveforms", "exports", "manifest.jsonl"]
+_trash_lock = threading.Lock()
+
+
+def _busy() -> bool:
+    with conn() as c:
+        return bool(c.execute("SELECT 1 FROM jobs WHERE status IN ('queued', 'processing') LIMIT 1").fetchone())
+
+
+def _trash_info(d: Path) -> dict:
+    info = {"name": d.name, "created": (d / "speech_lab.db").stat().st_mtime, "videos": 0, "segments": 0}
+    try:
+        c = sqlite3.connect(d / "speech_lab.db")
+        try:
+            info["segments"] = c.execute("SELECT COUNT(*) FROM segments").fetchone()[0]
+            info["videos"] = c.execute("SELECT COUNT(DISTINCT video) FROM segments").fetchone()[0]
+        finally:
+            c.close()
+    except sqlite3.Error:
+        pass
+    return info
+
+
+@app.post("/api/clear")
+def clear_all():
+    """Убирает все видео, аудио, сегменты и тексты в корзину. Ничего не удаляется насовсем."""
+    with _trash_lock:
+        if _busy():
+            raise HTTPException(409, "Идёт обработка видео: дождитесь окончания очереди")
+        with conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM segments").fetchone()[0] + \
+                c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        if not n and not any(UPLOADS.iterdir()):
+            raise HTTPException(400, "Нечего очищать")
+        dst = TRASH / time.strftime("%Y-%m-%d_%H-%M-%S")
+        dst.mkdir(parents=True, exist_ok=False)
+        backup = sqlite3.connect(dst / "speech_lab.db")
+        try:
+            with conn() as c:
+                c.backup(backup)  # копия базы: из неё восстанавливаются сегменты, правки, спикеры и задачи
+        finally:
+            backup.close()
+        for part in DATA_PARTS:
+            if (DATA / part).exists():
+                shutil.move(str(DATA / part), str(dst / part))
+        with conn() as c:
+            c.execute("DELETE FROM segments"); c.execute("DELETE FROM speakers"); c.execute("DELETE FROM jobs")
+        UPLOADS.mkdir(parents=True, exist_ok=True)
+    return _trash_info(dst)
+
+
+@app.get("/api/trash")
+def trash_list():
+    if not TRASH.exists():
+        return []
+    return [_trash_info(d) for d in sorted(TRASH.iterdir(), reverse=True) if (d / "speech_lab.db").exists()]
+
+
+def _trash_dir(name: str) -> Path:
+    d = TRASH / Path(name).name
+    if not (d / "speech_lab.db").exists():
+        raise HTTPException(404, "В корзине такого нет")
+    return d
+
+
+def _move_back(src: Path, dst: Path) -> None:
+    """Возвращает файлы на место; если файл с тем же именем уже появился, текущий не трогаем."""
+    if src.is_file():
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        return
+    for p in src.rglob("*"):
+        if p.is_file():
+            _move_back(p, dst / p.relative_to(src))
+
+
+@app.post("/api/trash/{name}/restore")
+def trash_restore(name: str):
+    with _trash_lock:
+        d = _trash_dir(name)
+        index = DATA / "transcripts" / "audio_index.json"
+        old_index = d / "transcripts" / "audio_index.json"
+        merged = {**(json.loads(old_index.read_text(encoding="utf-8")) if old_index.exists() else {}),
+                  **(json.loads(index.read_text(encoding="utf-8")) if index.exists() else {})}
+        for part in DATA_PARTS:
+            if (d / part).exists():
+                _move_back(d / part, DATA / part)
+        if merged:
+            index.parent.mkdir(parents=True, exist_ok=True)
+            index.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+        with conn() as c:
+            c.execute("ATTACH DATABASE ? AS old", (str(d / "speech_lab.db"),))
+            cols = ", ".join(r[1] for r in c.execute("PRAGMA old.table_info(segments)") if r[1] != "id")
+            n = c.execute(f"INSERT OR IGNORE INTO main.segments ({cols}) SELECT {cols} FROM old.segments").rowcount
+            c.execute("INSERT OR IGNORE INTO main.speakers SELECT * FROM old.speakers")
+            jcols = ", ".join(r[1] for r in c.execute("PRAGMA old.table_info(jobs)") if r[1] != "id")
+            c.execute(f"INSERT INTO main.jobs ({jcols}) SELECT {jcols} FROM old.jobs WHERE status NOT IN ('queued', 'processing')")
+            c.commit()
+            c.execute("DETACH DATABASE old")
+            prepare.write_manifest(c, DATA)
+        shutil.rmtree(d)
+    return {"restored": n}
+
+
+@app.delete("/api/trash/{name}")
+def trash_delete(name: str):
+    """Удалить из корзины насовсем."""
+    with _trash_lock:
+        shutil.rmtree(_trash_dir(name))
+    return {"ok": True}
 
 
 @app.get("/api/export.jsonl", response_class=PlainTextResponse)
