@@ -1,7 +1,7 @@
 """ZIP-архив датасета: видео + аудио + сегменты + текст в одном файле.
 
 Структура архива:
-    manifest.jsonl / manifest.csv       все сегменты всех видео в архиве (пути внутри архива)
+    manifest.jsonl / manifest.csv       сегменты всех видео в архиве, кроме брака (rejected)
     <video>/video.<ext>                 исходный файл (если есть)
     <video>/audio.wav                   полное аудио 16 kHz mono
     <video>/segments/*.wav              нарезанные реплики
@@ -57,6 +57,8 @@ def build_zip(conn: sqlite3.Connection, data: Path, dst: Path, source_for, video
     with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True, strict_timestamps=False) as z:
         for video in videos:
             sql, params = "SELECT * FROM segments WHERE video = ?", [video]
+            # брак никогда не попадает в архив: ни wav, ни manifest, ни текст
+            sql += " AND status != 'rejected'"
             if status:
                 sql += " AND status = ?"; params.append(status)
             segs = conn.execute(sql + " ORDER BY start", params).fetchall()
@@ -108,7 +110,7 @@ if __name__ == "__main__":  # python -m app.bundle [--status approved] [--video 
     ap = argparse.ArgumentParser(description="Собрать ZIP: видео, аудио, сегменты, текст")
     ap.add_argument("--data", default=os.environ.get("DATA_DIR", "data"))
     ap.add_argument("--video")
-    ap.add_argument("--status", choices=["pending", "approved", "rejected", "overlap"])
+    ap.add_argument("--status", choices=["pending", "approved", "overlap"])
     args = ap.parse_args()
     data = Path(args.data)
     out = data / "exports" / f"{args.video or 'speech_lab_all'}{'_' + args.status if args.status else ''}.zip"

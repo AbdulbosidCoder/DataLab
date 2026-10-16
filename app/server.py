@@ -391,8 +391,8 @@ _zip_locks_guard = threading.Lock()
 @app.get("/api/export.zip")
 def export_zip(video: str | None = None, status: str | None = None):
     """Всё в одном архиве: видео, аудио, сегменты, текст. Копия остаётся в data/exports/."""
-    if status and status not in STATUSES:
-        raise HTTPException(400, "Неизвестный статус")
+    if status and status not in STATUSES - {"rejected"}:
+        raise HTTPException(400, "Неизвестный статус (брак в архив не попадает)")
     name = f"{video or 'speech_lab_all'}{'_' + status if status else ''}.zip"
     dst = DATA / "exports" / name
     dst.parent.mkdir(parents=True, exist_ok=True)
