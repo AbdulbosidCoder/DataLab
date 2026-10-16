@@ -111,6 +111,9 @@
   .menu summary::-webkit-details-marker { display: none; }
   .menu .drop { position: fixed; top: 38px; z-index: 40; display: grid; min-width: 200px; background: var(--panel2);
                 border: 1px solid var(--line); border-radius: 6px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.4); transform: translateX(-60%); }
+  .menu .drop hr { width: 100%; border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  .menu .drop > span { padding: 2px 10px; font-size: 11px; }
+  .menu .drop a[hidden] { display: none; }
   .menu .drop a { padding: 6px 10px; border-radius: 4px; } .menu .drop a:hover { background: #34353b; }
   #tl.nodata #tlInner { display: none; }
 
@@ -152,6 +155,12 @@
       <a href="/api/export.zip" title="Все видео: видео, аудио, сегменты, текст">ZIP всё</a>
       <a href="/api/export.zip?status=approved" title="Только одобренные сегменты">ZIP только одобренные</a>
       <a href="/api/export.jsonl">approved.jsonl</a>
+      <hr><span class="muted">Только текст, со спикерами</span>
+      <a href="/api/transcripts.zip?fmt=srt" title="Все видео: по файлу .srt на видео">SRT всех видео</a>
+      <a href="/api/transcripts.zip?fmt=txt" title="Все видео: по файлу .txt на видео">TXT всех видео</a>
+      <a href="/api/transcripts.zip" title="Все видео: .srt и .txt">SRT + TXT всех видео</a>
+      <a id="curSrt" hidden>SRT этого видео</a>
+      <a id="curTxt" hidden>TXT этого видео</a>
     </div>
   </details>
   <button id="bTrash" title="Очищенные видео: можно вернуть">Корзина</button>
@@ -335,7 +344,7 @@ async function refreshStats() {
 // ---------- очистка и корзина ----------
 function resetStudio() {
   video = ""; store.set("video", ""); data = null; wave = null; sel = null; dirty = false; showInspector(null);
-  v.removeAttribute("src"); v.load();
+  v.removeAttribute("src"); v.load(); $("curSrt").hidden = $("curTxt").hidden = true;
   $("tracks").innerHTML = ""; $("srcName").textContent = "Нет видео"; $("subtitle").innerHTML = "";
   $("tlEmpty").hidden = false; tl.classList.add("nodata");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -376,6 +385,11 @@ async function showTrash() {
   $("modal").hidden = false;
 }
 $("bTrash").onclick = showTrash;
+document.querySelector(".menu .drop").addEventListener("click", (e) => {
+  if (!e.target.closest("a")) return;
+  if (dirty && !confirm("Есть несохранённые изменения, в файл они не попадут. Всё равно скачать?")) e.preventDefault();
+  document.querySelector(".menu").open = false;
+});
 document.addEventListener("click", (e) => { const m = document.querySelector(".menu"); if (m.open && !m.contains(e.target)) m.open = false; });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("modal").hidden = true; document.querySelector(".menu").open = false; } });
 $("mClose").onclick = () => $("modal").hidden = true;
@@ -386,6 +400,7 @@ async function openVideo(name) {
   if (dirty && !confirm("Есть несохранённые изменения. Перейти?")) return;
   video = name; store.set("video", name); sel = null; dirty = false; showInspector(null);
   document.querySelectorAll(".clip-item").forEach((el) => el.classList.toggle("active", el.dataset.v === name));
+  for (const f of ["Srt", "Txt"]) { const a = $("cur" + f); a.hidden = false; a.href = `/api/transcript/${encodeURIComponent(name)}.${f.toLowerCase()}`; }
   v.src = `/media/${encodeURIComponent(name)}`;
   v.onerror = () => { if (!v.src.includes("audio_only")) v.src = `/media/${encodeURIComponent(name)}?audio_only=1`; };
   wave = null;

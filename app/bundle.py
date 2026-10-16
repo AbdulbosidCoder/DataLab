@@ -34,15 +34,56 @@ def _row(r: sqlite3.Row, video: str, names: dict) -> dict:
 
 
 def _who(r: dict) -> str:
-    return f'{r["speaker"]} ({r["speaker_name"]})' if r["speaker_name"] else str(r["speaker"])
+    """Имя, которое дал редактор, иначе метка без префикса видео: Ali / SPEAKER_00."""
+    if r["speaker_name"]:
+        return r["speaker_name"]
+    spk = str(r["speaker"] or "")
+    return spk[len(r["video"]) + 1:] if spk.startswith(f'{r["video"]}_') else spk
 
 
 def _transcripts(rows: list[dict]) -> tuple[str, str]:
+    rows = [r for r in rows if (r["text"] or "").strip()]  # пустой клип в субтитрах не нужен
     txt = "".join(f'[{prepare.fmt_ts(r["start"], ".")} - {prepare.fmt_ts(r["end"], ".")}] '
                   f'{_who(r)}: {r["text"]}\n' for r in rows)
     srt = "\n".join(f'{i}\n{prepare.fmt_ts(r["start"])} --> {prepare.fmt_ts(r["end"])}\n{_who(r)}: {r["text"]}\n'
                     for i, r in enumerate(rows, 1))
     return txt, srt
+
+
+def _segments(conn: sqlite3.Connection, video: str, status: str | None) -> list[sqlite3.Row]:
+    # брак никогда не попадает в выгрузку: ни wav, ни manifest, ни текст
+    sql, params = "SELECT * FROM segments WHERE video = ? AND status != 'rejected'", [video]
+    if status:
+        sql += " AND status = ?"; params.append(status)
+    return conn.execute(sql + " ORDER BY start", params).fetchall()
+
+
+def transcript(conn: sqlite3.Connection, video: str, fmt: str, status: str | None = None) -> str | None:
+    """Текст одного видео в формате txt или srt с правками и именами спикеров; None, если сегментов нет."""
+    names = db.speaker_names(conn, video)
+    rows = [_row(r, video, names) for r in _segments(conn, video, status)]
+    if not rows:
+        return None
+    txt, srt = _transcripts(rows)
+    return srt if fmt == "srt" else txt
+
+
+def build_transcripts(conn: sqlite3.Connection, copies: Path, fmts: list[str], status: str | None = None) -> tuple[bytes, dict]:
+    """ZIP только с текстами всех видео: <video>.srt / <video>.txt. Копии файлов кладёт в copies/."""
+    copies.mkdir(parents=True, exist_ok=True)
+    counts, buf = {"videos": 0}, io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for (video,) in conn.execute("SELECT DISTINCT video FROM segments ORDER BY video").fetchall():
+            done = False
+            for fmt in fmts:
+                text = transcript(conn, video, fmt, status)
+                if text is None:
+                    break
+                (copies / f"{video}.{fmt}").write_text(text, encoding="utf-8")
+                z.writestr(f"{video}.{fmt}", text)
+                done = True
+            counts["videos"] += done
+    return buf.getvalue(), counts
 
 
 def build_zip(conn: sqlite3.Connection, data: Path, dst: Path, source_for, videos: list[str] | None = None,
@@ -56,12 +97,7 @@ def build_zip(conn: sqlite3.Connection, data: Path, dst: Path, source_for, video
     # strict_timestamps=False: файлы с датой до 1980 (бывает после копирования) не роняют сборку
     with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True, strict_timestamps=False) as z:
         for video in videos:
-            sql, params = "SELECT * FROM segments WHERE video = ?", [video]
-            # брак никогда не попадает в архив: ни wav, ни manifest, ни текст
-            sql += " AND status != 'rejected'"
-            if status:
-                sql += " AND status = ?"; params.append(status)
-            segs = conn.execute(sql + " ORDER BY start", params).fetchall()
+            segs = _segments(conn, video, status)
             if not segs:
                 continue
             counts["videos"] += 1
