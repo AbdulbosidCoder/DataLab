@@ -224,9 +224,10 @@
       <div class="row" style="margin-top:6px">
         <button id="bSave" style="flex:1">Сохранить</button>
         <button id="bNext" style="flex:1">Следующий ⟶</button>
+        <button id="bDelete" class="b-bad" title="Удалить сегмент (Delete), можно отменить">🗑</button>
       </div>
       <div class="keys">
-        <kbd>Space</kbd> пуск/пауза · <kbd>J</kbd> −2 с · <kbd>←</kbd>/<kbd>→</kbd> клипы · <kbd>I</kbd>/<kbd>O</kbd> вход/выход · <kbd>Enter</kbd> сегмент · <kbd>Alt</kbd>+<kbd>1…9</kbd> спикер<br>
+        <kbd>Space</kbd> пуск/пауза · <kbd>J</kbd> −2 с · <kbd>←</kbd>/<kbd>→</kbd> клипы · <kbd>I</kbd>/<kbd>O</kbd> вход/выход · <kbd>Enter</kbd> сегмент · <kbd>Alt</kbd>+<kbd>1…9</kbd> спикер · <kbd>N</kbd> новый текст · <kbd>Delete</kbd> удалить<br>
         <kbd>Ctrl</kbd>+<kbd>Enter</kbd> одобрить · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> брак · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> наложение ·
         <kbd>Ctrl</kbd>+<kbd>S</kbd> сохранить · <kbd>Ctrl</kbd>+<kbd>Space</kbd> пауза · <kbd>Ctrl</kbd>+<kbd>←</kbd> −2 с · <kbd>Ctrl</kbd>+<kbd>↓</kbd> следующий
       </div>
@@ -242,6 +243,7 @@
     <button id="tNext" title="Следующий клип">⏭</button>
     <span id="tc">00:00:00:00</span>
     <button id="tFollow" class="on" title="Таймлайн следует за плейхедом">Следовать</button>
+    <button id="addSeg" title="Новый сегмент с текстом от плейхеда (N). Ещё: двойной щелчок по пустому месту дорожки">+ Текст</button>
     <button id="addSpk" title="Добавить дорожку нового спикера">+ Спикер</button>
     <span class="grow"></span>
     <span class="muted">Масштаб</span>
@@ -473,7 +475,7 @@ function renderTracks() {
     el.dataset.id = s.id;
     el.style.cssText = `left:${x(s.start)}px;width:${Math.max(4, (s.end - s.start) * pps)}px;background:${spkColor(s.speaker)}`;
     el.title = `#${s.id} ${fmt(s.start)}–${fmt(s.end)}\n${s.text || ""}`;
-    el.innerHTML = `<div class="t">${s.status === "approved" ? "✓ " : ""}${esc(s.text || "")}</div>
+    el.innerHTML = `<div class="t">${s.status === "approved" ? "✓ " : ""}${esc(s.text || "(без текста)")}</div>
       <div class="s" style="background:${stColor[s.status]}"></div><div class="h l"></div><div class="h r"></div>`;
     (rows[s.speaker] || $("tracks").lastElementChild)?.appendChild(el);
     el.onmousedown = (e) => clipDown(e, s, el);
@@ -555,6 +557,48 @@ v.onloadedmetadata = () => $("stage").classList.toggle("noimg", !v.videoWidth);
 
 tl.addEventListener("scroll", draw);
 window.addEventListener("resize", draw);
+
+// ---------- добавить и удалить сегмент ----------
+async function addSegment(t0, spk) {
+  if (!data) return;
+  if (dirty && !confirm("Есть несохранённые изменения. Создать новый сегмент без сохранения?")) return;
+  const start = Math.max(0, t0 ?? v.currentTime ?? 0), end = Math.min(data.duration || start + 3, start + 3);
+  if (end - start < 0.3) return alert("Слишком близко к концу видео");
+  const speaker = spk || sel?.speaker || data.speakers[0] || await addSpeaker();
+  try {
+    const s = await api("/api/segments", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video, start, end, speaker, text: "", annotator: who() }) });
+    dirty = false; await loadTimeline(); refreshStats();
+    const ns = data.segments.find((x) => x.id === s.id);
+    if (ns) { select(ns); $("text").focus(); }
+    toast("Новый сегмент: задайте границы (I/O или края клипа) и впишите текст.", 5000);
+  } catch (e) { alert("Не создан: " + e.message); }
+}
+async function deleteSegment() {
+  if (!sel) return;
+  const gone = sel;
+  try {
+    await api(`/api/segments/${gone.id}`, { method: "DELETE" });
+    sel = null; dirty = false; showInspector(null); await loadTimeline(); refreshStats();
+    toast(`Сегмент #${gone.id} удалён. <button id="undoDel">Вернуть</button>`, 10000);
+    $("undoDel").onclick = async () => {
+      const { video: vid, start, end, speaker, text, auto_text, status, annotator, notes } = gone;
+      const s = await api("/api/segments", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video: vid, start, end, speaker, text: text || "", auto_text: auto_text || "", status, annotator, notes }) });
+      $("toast").hidden = true; await loadTimeline(); refreshStats();
+      const ns = data.segments.find((x) => x.id === s.id); if (ns) select(ns);
+    };
+  } catch (e) { alert("Не удалён: " + e.message); }
+}
+$("addSeg").onclick = () => addSegment();
+$("bDelete").onclick = deleteSegment;
+// двойной щелчок по пустому месту дорожки = новый сегмент этого спикера в этом месте
+$("tracks").addEventListener("dblclick", (e) => {
+  const tr = e.target.closest(".track");
+  if (!tr || e.target.closest(".clip") || e.target.closest(".tlabel")) return;
+  const r = tl.getBoundingClientRect();
+  addSegment(tAt(e.clientX - r.left + tl.scrollLeft), tr.dataset.spk);
+});
 
 // клик по линейке / волне = перемотка, колёсико с Ctrl = масштаб
 tl.addEventListener("mousedown", (e) => {
@@ -742,6 +786,8 @@ document.addEventListener("keydown", (e) => {
   else if (k === "i") $("setIn").click();
   else if (k === "o") $("setOut").click();
   else if (e.key === "Enter") playSeg();
+  else if (k === "n") { e.preventDefault(); addSegment(); }
+  else if (e.key === "Delete") { e.preventDefault(); deleteSegment(); }
 });
 window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 
