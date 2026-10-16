@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
@@ -541,6 +541,47 @@ def export(status: str = "approved"):
                              "video": r["video"]}, ensure_ascii=False) for r in rows]
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""), media_type="application/x-ndjson",
                              headers={"Content-Disposition": f'attachment; filename="{status}.jsonl"'})
+
+
+TEXT_FORMATS = {"srt": "application/x-subrip", "txt": "text/plain"}
+
+
+def _text_status(status: str | None) -> None:
+    if status and status not in STATUSES - {"rejected"}:
+        raise HTTPException(400, "Неизвестный статус (брак в выгрузку не попадает)")
+
+
+@app.get("/api/transcripts.zip")
+def export_transcripts(fmt: str = "all", status: str | None = None):
+    """Только тексты всех видео в SRT и/или TXT, с правками и именами спикеров. Копии в data/exports/transcripts/."""
+    fmts = list(TEXT_FORMATS) if fmt == "all" else [fmt]
+    if not set(fmts) <= TEXT_FORMATS.keys():
+        raise HTTPException(400, "Формат: srt, txt или all")
+    _text_status(status)
+    with conn() as c:
+        body, counts = bundle.build_transcripts(c, DATA / "exports" / "transcripts", fmts, status)
+    if not counts["videos"]:
+        raise HTTPException(404, "Нет сегментов для выгрузки")
+    name = f"transcripts_{fmt}{'_' + status if status else ''}.zip"
+    return Response(body, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/transcript/{video}.{fmt}")
+def export_transcript(video: str, fmt: str, status: str | None = None):
+    """Текст одного видео в SRT или TXT."""
+    if fmt not in TEXT_FORMATS:
+        raise HTTPException(400, "Формат: srt или txt")
+    _text_status(status)
+    with conn() as c:
+        text = bundle.transcript(c, video, fmt, status)
+    if text is None:
+        raise HTTPException(404, "Нет сегментов для выгрузки")
+    copy = DATA / "exports" / "transcripts" / f"{video}.{fmt}"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_text(text, encoding="utf-8")
+    return Response(text.encode("utf-8"), media_type=f"{TEXT_FORMATS[fmt]}; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{video}.{fmt}"'})
 
 
 _zip_locks: dict[str, threading.Lock] = {}
