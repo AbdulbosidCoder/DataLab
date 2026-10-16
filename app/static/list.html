@@ -34,7 +34,7 @@
   .job, .vid { padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
   .job:first-child, .vid:first-child { border-top: 0; }
   .job .st { font-weight: 600; }
-  .st-queued, .st-processing { color: var(--warn); } .st-done { color: var(--ok); } .st-error { color: var(--bad); }
+  .st-queued, .st-processing { color: var(--warn); } .st-done { color: var(--ok); } .st-error { color: var(--bad); } .st-duplicate { color: var(--muted, #6b7280); }
   .vid { cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
   .vid.active { color: var(--accent); font-weight: 600; }
   .bar { height: 4px; background: #e7eaf0; border-radius: 2px; margin-top: 3px; }
@@ -194,7 +194,7 @@ async function uploadFiles(files) {
 let jobsActive = false;
 async function refreshJobs() {
   const jobs = await api("/api/jobs");
-  const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка" };
+  const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка", duplicate: "дубликат" };
   $("jobs").innerHTML = jobs.length ? jobs.map((j) => `<div class="job"><div>${esc(j.filename)}</div>
     <span class="st st-${j.status}">${st[j.status] || j.status}</span> <span class="draft">${esc(j.message || "")}</span></div>`).join("")
     : '<div class="empty">Пока ничего не загружено</div>';

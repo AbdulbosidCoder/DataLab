@@ -35,7 +35,9 @@
   .pad { padding: 10px; }
   #drop { border: 1px dashed #4b4d55; border-radius: 6px; padding: 14px 8px; text-align: center; color: var(--muted); cursor: pointer; }
   #drop.over { border-color: var(--accent); color: var(--accent); }
-  .job { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+  .job { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+  .jrow { display: flex; gap: 6px; align-items: center; } .jname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jx { padding: 0 5px; font-size: 11px; line-height: 16px; flex: none; }
   .st-queued, .st-processing { color: var(--accent); } .st-done { color: var(--ok); } .st-error { color: var(--bad); } .st-duplicate { color: var(--muted, #8b949e); }
   .clip-item { display: flex; gap: 8px; align-items: center; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
   .clip-item:hover { background: var(--panel2); }
@@ -77,10 +79,11 @@
   .transport .grow { flex: 1; }
   #tl { position: relative; overflow: auto; min-height: 0; }
   #tlInner { position: relative; min-height: 100%; }
-  #tlCanvas { position: sticky; left: 0; top: 0; display: block; z-index: 2; }
+  /* слои: клипы (1–2) < плейхед (3) < подписи дорожек (4) < линейка и волна (5) */
+  #tlCanvas { position: sticky; left: 0; top: 0; display: block; z-index: 5; }
   .track { position: relative; height: 46px; border-bottom: 1px solid var(--line); }
   .track:nth-child(odd) { background: #26272b; }
-  .tlabel { position: sticky; left: 0; z-index: 3; width: 120px; height: 100%; display: flex; flex-direction: column; justify-content: center;
+  .tlabel { position: sticky; left: 0; z-index: 4; width: 120px; height: 100%; display: flex; flex-direction: column; justify-content: center;
             padding: 0 8px; background: var(--panel2); border-right: 1px solid var(--line); font-size: 12px; }
   .tlabel i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
   .tlabel .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
@@ -88,22 +91,47 @@
   .tlabel:hover .tb { display: flex; }
   .tlabel .tb button { padding: 0 4px; font-size: 11px; line-height: 16px; }
   .track.drop { box-shadow: inset 0 0 0 2px var(--sel); }
-  .clip { position: absolute; top: 4px; height: 38px; border-radius: 4px; overflow: hidden; cursor: pointer; font-size: 11px; color: #111;
+  .clip { position: absolute; z-index: 1; top: 4px; height: 38px; border-radius: 4px; overflow: clip; cursor: pointer; font-size: 11px; color: #111;
           padding: 3px 8px; white-space: nowrap; text-overflow: ellipsis; border: 1px solid rgba(0,0,0,.35); user-select: none; }
-  .clip .t { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+  /* текст клипа прилипает к краю подписей: виден, даже когда начало клипа ушло под них */
+  .clip .t { display: inline-block; max-width: 100%; vertical-align: top; overflow: hidden; text-overflow: ellipsis; font-weight: 500; position: sticky; left: 128px; }
   .clip .s { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; }
-  .clip.sel { outline: 2px solid var(--sel); outline-offset: 0; z-index: 4; }
+  .clip.sel { outline: 2px solid var(--sel); outline-offset: -2px; z-index: 2; }
   .clip.st-rejected { opacity: .45; }
   .clip .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
   .clip .h.l { left: 0; } .clip .h.r { right: 0; }
   .clip .h:hover, .clip.drag .h { background: rgba(255,255,255,.45); }
-  #playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--play); z-index: 5; pointer-events: none; }
-  #playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--play); }
+  #playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--play); z-index: 3; pointer-events: none; }
   .empty { color: var(--muted); padding: 30px; text-align: center; }
+  header button { padding: 2px 10px; flex: none; }
+  header b { flex: none; }
+  header .chips { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .menu { position: relative; flex: none; }
+  .menu summary { list-style: none; cursor: pointer; color: var(--accent); }
+  .menu summary::-webkit-details-marker { display: none; }
+  .menu .drop { position: fixed; top: 38px; z-index: 40; display: grid; min-width: 200px; background: var(--panel2);
+                border: 1px solid var(--line); border-radius: 6px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.4); transform: translateX(-60%); }
+  .menu .drop a { padding: 6px 10px; border-radius: 4px; } .menu .drop a:hover { background: #34353b; }
+  #tl.nodata #tlInner { display: none; }
+
+  /* корзина и уведомление */
+  #modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: grid; place-items: center; padding: 16px; }
+  #modal[hidden], #toast[hidden] { display: none; }
+  #modal .box { width: min(520px, 100%); max-height: 80vh; overflow: auto; background: var(--panel); border: 1px solid var(--line);
+                border-radius: 8px; padding: 14px 16px; display: grid; gap: 10px; }
+  #modal .mhead { display: flex; justify-content: space-between; align-items: center; font-size: 15px; }
+  .trow { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .trow .grow { flex: 1; min-width: 0; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 60; background: #2f3036; border: 1px solid var(--line);
+           border-radius: 6px; padding: 8px 12px; display: flex; gap: 12px; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
 
   @media (max-width: 1000px) {
+    html, body { height: auto; }
     body { overflow: auto; grid-template-rows: auto auto auto; }
-    .top { grid-template-columns: 1fr; }
+    .top, .top > * { min-height: auto; }
+    .top { grid-template-columns: 1fr; grid-template-rows: auto; }
+    .top .panel { overflow: visible; max-height: none; }
+    .menu .drop { top: auto; margin-top: 6px; }
     .viewer { height: 260px; }
     .timeline { height: 360px; }
     header { flex-wrap: wrap; padding: 6px 12px; } header .grow { display: none; }
@@ -116,12 +144,28 @@
   <b>SPEECH LAB · STUDIO</b>
   <span class="chips muted" id="stats"></span>
   <span class="grow"></span>
-  <label class="muted">Разметчик <input id="annotator" size="10" placeholder="имя"></label>
+  <input id="annotator" size="12" placeholder="Разметчик (имя)" title="Имя разметчика">
   <a href="/list.html">Список</a>
-  <a href="/api/export.zip" title="Все видео: видео, аудио, сегменты, текст">⬇ ZIP всё</a>
-  <a href="/api/export.zip?status=approved" title="Только одобренные сегменты">⬇ ZIP одобренные</a>
-  <a href="/api/export.jsonl">approved.jsonl</a>
+  <details class="menu">
+    <summary>⬇ Экспорт</summary>
+    <div class="drop">
+      <a href="/api/export.zip" title="Все видео: видео, аудио, сегменты, текст">ZIP всё</a>
+      <a href="/api/export.zip?status=approved" title="Только одобренные сегменты">ZIP только одобренные</a>
+      <a href="/api/export.jsonl">approved.jsonl</a>
+    </div>
+  </details>
+  <button id="bTrash" title="Очищенные видео: можно вернуть">Корзина</button>
+  <button id="bClear" class="b-bad" title="Убрать все видео в корзину (можно вернуть)">🗑 Очистить</button>
 </header>
+
+<div id="modal" hidden>
+  <div class="box">
+    <div class="mhead"><b>Корзина</b><button id="mClose" title="Закрыть">✕</button></div>
+    <div class="muted" style="font-size:12px">Очищенные видео хранятся здесь со всеми правками, пока вы не удалите их насовсем.</div>
+    <div id="trashList"></div>
+  </div>
+</div>
+<div id="toast" hidden></div>
 
 <div class="top">
   <!-- медиа -->
@@ -204,7 +248,7 @@
     <input type="range" id="zoom" min="8" max="400" value="60" style="width:160px">
     <button id="zFit" title="Вписать всё видео">Вписать</button>
   </div>
-  <div id="tl">
+  <div id="tl" class="nodata">
     <div id="tlInner">
       <canvas id="tlCanvas" height="94"></canvas>
       <div id="tracks"></div>
@@ -232,7 +276,7 @@ const fmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")
 
 const v = $("v"), tl = $("tl"), canvas = $("tlCanvas"), ctx = canvas.getContext("2d");
 let video = store.get("video") || "", data = null, wave = null, pps = +store.get("pps") || 60;
-let sel = null, dirty = false, loop = false, segEnd = null, follow = true;
+let sel = null, dirty = false, loop = false, segEnd = null, follow = true, lastDrawT = -1;
 $("zoom").value = pps;
 $("annotator").value = store.get("annotator") || "";
 $("annotator").onchange = () => store.set("annotator", $("annotator").value.trim());
@@ -260,9 +304,14 @@ let jobsActive = false;
 async function refreshJobs() {
   const jobs = await api("/api/jobs");
   const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка", duplicate: "дубликат" };
-  const shown = jobs.filter((j) => j.status !== "done").slice(0, 8);
-  $("jobs").innerHTML = shown.map((j) => `<div class="job">${esc(j.filename)}<br>
+  const hidden = JSON.parse(store.get("hiddenJobs") || "[]");
+  const shown = jobs.filter((j) => j.status !== "done" && !hidden.includes(j.id)).slice(0, 8);
+  $("jobs").innerHTML = shown.map((j) => `<div class="job"><div class="jrow"><span class="jname" title="${esc(j.filename)}">${esc(j.filename)}</span>
+    ${j.status === "error" || j.status === "duplicate" ? `<button class="jx" data-job="${j.id}" title="Скрыть">✕</button>` : ""}</div>
     <span class="st-${j.status}">${st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
+  document.querySelectorAll("[data-job]").forEach((b) => b.onclick = () => {
+    store.set("hiddenJobs", JSON.stringify([...hidden, +b.dataset.job].slice(-200))); refreshJobs();
+  });
   const active = jobs.some((j) => j.status === "queued" || j.status === "processing");
   if (jobsActive && !active) { await refreshStats(); if (!video && jobs[0]?.video) openVideo(jobs[0].video); else if (video) loadTimeline(true); }
   jobsActive = active;
@@ -281,6 +330,55 @@ async function refreshStats() {
   if (!data && s.videos.length) openVideo(s.videos.some((x) => x.video === video) ? video : s.videos[0].video);
 }
 
+// ---------- очистка и корзина ----------
+function resetStudio() {
+  video = ""; store.set("video", ""); data = null; wave = null; sel = null; dirty = false; showInspector(null);
+  v.removeAttribute("src"); v.load();
+  $("tracks").innerHTML = ""; $("srcName").textContent = "Нет видео"; $("subtitle").innerHTML = "";
+  $("tlEmpty").hidden = false; tl.classList.add("nodata");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+let toastTimer = null;
+function toast(html, ms = 12000) {
+  $("toast").innerHTML = html; $("toast").hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").hidden = true, ms);
+}
+$("bClear").onclick = async () => {
+  if (!confirm("Убрать ВСЕ видео, аудио, сегменты и тексты в корзину?\nИх можно будет вернуть кнопкой «Корзина».")) return;
+  try {
+    const r = await api("/api/clear", { method: "POST" });
+    resetStudio(); refreshStats(); refreshJobs();
+    toast(`Убрано в корзину: видео ${r.videos}, сегментов ${r.segments}. <button id="undoClear">Вернуть</button>`);
+    $("undoClear").onclick = () => restoreTrash(r.name);
+  } catch (e) { alert(e.message); }
+};
+async function restoreTrash(name) {
+  try {
+    const r = await api(`/api/trash/${encodeURIComponent(name)}/restore`, { method: "POST" });
+    $("toast").hidden = true; $("modal").hidden = true;
+    toast(`Возвращено сегментов: ${r.restored}`, 5000);
+    data = null; refreshStats(); refreshJobs();
+  } catch (e) { alert(e.message); }
+}
+async function showTrash() {
+  const list = await api("/api/trash");
+  $("trashList").innerHTML = list.map((t) => `<div class="trow"><div class="grow"><b>${new Date(t.created * 1000).toLocaleString("ru-RU")}</b>
+      <div class="muted" style="font-size:12px">видео ${t.videos} · сегментов ${t.segments}</div></div>
+      <button class="b-ok" data-r="${esc(t.name)}">Вернуть</button><button class="b-bad" data-d="${esc(t.name)}" title="Удалить насовсем">Удалить</button></div>`).join("")
+    || '<div class="empty">Корзина пуста</div>';
+  document.querySelectorAll("[data-r]").forEach((b) => b.onclick = () => restoreTrash(b.dataset.r));
+  document.querySelectorAll("[data-d]").forEach((b) => b.onclick = async () => {
+    if (!confirm("Удалить насовсем? Вернуть будет нельзя.")) return;
+    await api(`/api/trash/${encodeURIComponent(b.dataset.d)}`, { method: "DELETE" }); showTrash();
+  });
+  $("modal").hidden = false;
+}
+$("bTrash").onclick = showTrash;
+document.addEventListener("click", (e) => { const m = document.querySelector(".menu"); if (m.open && !m.contains(e.target)) m.open = false; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("modal").hidden = true; document.querySelector(".menu").open = false; } });
+$("mClose").onclick = () => $("modal").hidden = true;
+$("modal").onclick = (e) => { if (e.target.id === "modal") $("modal").hidden = true; };
+
 // ---------- таймлайн ----------
 async function openVideo(name) {
   if (dirty && !confirm("Есть несохранённые изменения. Перейти?")) return;
@@ -296,7 +394,7 @@ async function openVideo(name) {
 async function loadTimeline(keepSel) {
   data = await api(`/api/timeline/${encodeURIComponent(video)}`);
   $("srcName").textContent = data.source || data.video;
-  $("tlEmpty").hidden = true;
+  $("tlEmpty").hidden = true; tl.classList.remove("nodata");
   fillSpeakers();
   renderTracks();
   if (keepSel && sel) { const s = data.segments.find((x) => x.id === sel.id); if (s) select(s, false); }
@@ -398,7 +496,8 @@ function draw() {
   for (let t = Math.floor(t0 / major) * major; t <= t1; t += major / 5) {
     const px = x(t) - sl, isMajor = Math.abs(t / major - Math.round(t / major)) < 1e-6;
     ctx.beginPath(); ctx.moveTo(px + .5, isMajor ? 8 : 16); ctx.lineTo(px + .5, RULER); ctx.stroke();
-    if (isMajor) ctx.fillText(tc(t).slice(3, 8), px + 3, 11);
+    if (isMajor) { const r = Math.round(t * 10) / 10;
+      ctx.fillText(major < 1 ? `${tc(Math.floor(r)).slice(3, 8)}.${Math.round(r * 10) % 10}` : tc(Math.round(t)).slice(3, 8), px + 3, 11); }
   }
   // волна
   const mid = RULER + WAVE / 2;
@@ -415,6 +514,13 @@ function draw() {
     ctx.fillStyle = "rgba(232,163,60,.18)";
     const a = x(+$("iIn").value) - sl, b = x(+$("iOut").value) - sl; ctx.fillRect(a, RULER, b - a, WAVE);
   }
+  const ph = x(v.currentTime || 0) - sl;  // плейхед поверх линейки и волны
+  if (ph >= LABEL) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--play");
+    ctx.fillRect(Math.round(ph), 0, 1, RULER + WAVE);
+    ctx.beginPath(); ctx.moveTo(ph - 6, 0); ctx.lineTo(ph + 7, 0); ctx.lineTo(ph + .5, 8); ctx.fill();
+  }
+  lastDrawT = v.currentTime || 0;
   ctx.fillStyle = "#2a2b30"; ctx.fillRect(0, RULER, LABEL, WAVE); ctx.fillRect(0, 0, LABEL, RULER);
   ctx.fillStyle = "#9a9da6"; ctx.font = "11px system-ui"; ctx.fillText("Аудио", 10, mid + 4);
   ctx.strokeStyle = "#34353b"; ctx.beginPath(); ctx.moveTo(LABEL + .5, 0); ctx.lineTo(LABEL + .5, RULER + WAVE); ctx.stroke();
@@ -424,6 +530,7 @@ function movePlayhead() {
   if (!data) return;
   const t = v.currentTime || 0;
   $("playhead").style.left = x(t) + "px";
+  if (t !== lastDrawT) draw();
   $("tc").textContent = tc(t);
   // субтитр текущей реплики поверх видео
   const cur = data.segments.filter((s) => t >= s.start && t <= s.end);
