@@ -137,13 +137,15 @@ def wait(job_id: str, timeout: float = 3 * 3600, poll_interval: float = 2.0) -> 
 
 def transcribe(audio_path: str | Path, language: str = "uz", include_speakers: bool = True,
                duration_s: float | None = None, state_file: str | Path | None = None,
-               poll_interval: float = 2.0, timeout: float = 3 * 3600) -> dict:
+               poll_interval: float = 2.0, timeout: float = 3 * 3600, billing: dict | None = None) -> dict:
     """Отправляет файл в VoiceLab и ждёт готовую транскрипцию.
 
     state_file хранит Idempotency-Key и id задачи: если процесс оборвался, следующий запуск
     продолжит опрос той же задачи вместо повторной (платной) отправки.
     Возвращает Transcription: transcript, language, duration_ms, segments[{start_ms, end_ms, text,
     speaker?, words?}], speakers[].
+    billing (если передан) заполняется: job_id, credits (оценка VoiceLab по фактической длительности или,
+    если её не получить, оценка перед отправкой; None, если неизвестно), duration_ms.
     """
     state_path = Path(state_file) if state_file else None
     state = json.loads(state_path.read_text()) if state_path and state_path.exists() else {}
@@ -161,11 +163,22 @@ def transcribe(audio_path: str | Path, language: str = "uz", include_speakers: b
             pf = preflight(int(duration_s * 1000), state["idempotency_key"])
             if not pf.get("can_upload", True):
                 raise VoiceLabError(f"Недостаточно кредитов VoiceLab (нужно ≈{pf.get('estimated_credits')})")
+            state["estimated_credits"] = pf.get("estimated_credits")
         save()
         job = submit(audio_path, language, include_speakers, state["idempotency_key"])
         state["job_id"] = job["id"]
         save()
+    if billing is not None:
+        billing["job_id"] = state["job_id"]
     result = wait(state["job_id"], timeout=timeout, poll_interval=poll_interval)
+    if billing is not None:
+        billing["duration_ms"] = result.get("duration_ms")
+        billing["credits"] = state.get("estimated_credits")
+        if result.get("duration_ms"):  # списание идёт по фактической длительности: уточняем оценку (бесплатно)
+            try:
+                billing["credits"] = preflight(int(result["duration_ms"])).get("estimated_credits", billing["credits"])
+            except VoiceLabError:
+                pass
     if state_path:
         state_path.unlink(missing_ok=True)
     return result

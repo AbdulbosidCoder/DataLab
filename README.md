@@ -73,6 +73,13 @@ docker compose up -d --build      # открыть http://localhost:8000
 Копия архива остаётся в `data/exports/`. Без браузера: `python -m app.bundle [--status approved] [--video NAME]`
 (в Docker: `docker compose run --rm --entrypoint python prepare -m app.bundle`). «Экспорт approved.jsonl» отдаёт проверенные сегменты.
 
+**Расход VoiceLab.** Кнопка «VoiceLab: N кр.» в шапке показывает, сколько кредитов потрачено. По щелчку открываются итоги,
+расход по дням и журнал: какое видео, сколько минут аудио и кредитов, какие дубли не отправлялись. Кредиты берутся из
+`GET /v1/stt/preflight` по фактической длительности файла (так VoiceLab и списывает; запрос бесплатный). Упавшие задачи
+записываются с 0 кредитов, потому что VoiceLab возвращает их резерв. Журнал лежит в `data/usage.jsonl`, кнопка «Очистить»
+его не трогает. Баланс счёта API VoiceLab не отдаёт, его смотрите в кабинете VoiceLab. Пакетный запуск в конце печатает
+расход за запуск и за всё время. API: `GET /api/usage`.
+
 **Только текст: SRT и TXT.** В меню «⬇ Экспорт»: «SRT всех видео», «TXT всех видео», «SRT + TXT всех видео»
 (ZIP с файлом `<video>.srt` / `<video>.txt` на каждое видео) и «SRT/TXT этого видео» для открытого видео.
 В файлах текст с правками разметчиков и спикеры с именами, которые дал редактор (без имени остаётся `SPEAKER_00`).
@@ -95,6 +102,7 @@ docker compose run --rm prepare   # флаги передаются как ес�
 | `transcripts/<video>.voicelab.json` | сырой ответ VoiceLab |
 | `manifest.jsonl` | все сегменты: `audio_filepath`, `duration`, `text`, `speaker`, `video`, `status` |
 | `speech_lab.db` | SQLite, таблица `segments` (схема speech-lab) |
+| `usage.jsonl` | журнал расхода VoiceLab: отправки, кредиты, пропущенные дубли |
 | `exports/*.zip` | архивы «видео + аудио + сегменты + текст», собранные кнопкой ZIP |
 | `exports/transcripts/<video>.srt` / `.txt` | последние скачанные тексты с правками и именами спикеров |
 
