@@ -314,7 +314,10 @@ async function uploadFiles(files) {
   for (const f of files) {
     $("upmsg").textContent = `Загрузка ${f.name}…`;
     const fd = new FormData(); fd.append("file", f);
-    try { await api("/api/upload", { method: "POST", body: fd }); $("upmsg").textContent = `${f.name}: в очереди на VoiceLab`; }
+    try {
+      const r = await api("/api/upload", { method: "POST", body: fd });
+      $("upmsg").textContent = r.retried ? `${f.name}: повтор упавшей задачи, кредиты заново не спишутся` : `${f.name}: в очереди на VoiceLab`;
+    }
     catch (e) { $("upmsg").textContent = `Ошибка: ${e.message}`; }
   }
   $("file").value = ""; refreshJobs();
@@ -327,8 +330,14 @@ async function refreshJobs() {
   const hidden = JSON.parse(store.get("hiddenJobs") || "[]");
   const shown = jobs.filter((j) => j.status !== "done" && !hidden.includes(j.id)).slice(0, 8);
   $("jobs").innerHTML = shown.map((j) => `<div class="job"><div class="jrow"><span class="jname" title="${esc(j.filename)}">${esc(j.filename)}</span>
+    ${j.status === "error" ? `<button class="jx" data-retry="${j.id}" title="Повторить. Уже оплаченная расшифровка VoiceLab не спишется снова">↻ Повторить</button>` : ""}
     ${j.status === "error" || j.status === "duplicate" ? `<button class="jx" data-job="${j.id}" title="Скрыть">✕</button>` : ""}</div>
     <span class="st-${j.status}">${st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
+  document.querySelectorAll("[data-retry]").forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(`/api/jobs/${b.dataset.retry}/retry`, { method: "POST" }); } catch (e) { alert(e.message); }
+    refreshJobs();
+  });
   document.querySelectorAll("[data-job]").forEach((b) => b.onclick = () => {
     store.set("hiddenJobs", JSON.stringify([...hidden, +b.dataset.job].slice(-200))); refreshJobs();
   });

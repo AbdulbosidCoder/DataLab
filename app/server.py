@@ -115,6 +115,14 @@ async def upload(file: UploadFile = File(...)):
         # тот же файл уже загружали: не ставим в очередь, кредиты VoiceLab не тратятся
         dup = c.execute("SELECT filename, video FROM jobs WHERE sha256 = ? AND status != 'error' ORDER BY id LIMIT 1",
                         (h.hexdigest(),)).fetchone()
+        # тот же файл уже падал с ошибкой: повторяем ту задачу. Имя видео то же, поэтому VoiceLab
+        # продолжит уже созданную расшифровку (Idempotency-Key из transcripts/*.pending.json), а не спишет заново
+        failed = c.execute("SELECT id, filename FROM jobs WHERE sha256 = ? AND status = 'error' ORDER BY id DESC LIMIT 1",
+                           (h.hexdigest(),)).fetchone()
+        if not dup and failed and (UPLOADS / failed["filename"]).exists():
+            dst.unlink(missing_ok=True)
+            _requeue(c, failed["id"])
+            return {"id": failed["id"], "filename": failed["filename"], "retried": True}
         if dup:
             dst.unlink(missing_ok=True)
             raise HTTPException(409, f"Этот файл уже загружен как {dup['filename']}"
@@ -123,6 +131,27 @@ async def upload(file: UploadFile = File(...)):
                            (dst.name, h.hexdigest())).lastrowid
     _jobs.put(job_id)
     return {"id": job_id, "filename": dst.name}
+
+
+def _requeue(c: sqlite3.Connection, job_id: int) -> None:
+    c.execute("UPDATE jobs SET status = 'queued', message = 'Повтор: в очереди' WHERE id = ?", (job_id,))
+    c.commit()
+    _jobs.put(job_id)
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: int):
+    """Повторить упавшую задачу с тем же файлом: уже оплаченная расшифровка VoiceLab не оплачивается снова."""
+    with conn() as c:
+        job = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(404, "Задача не найдена")
+        if job["status"] != "error":
+            raise HTTPException(409, "Повторить можно только задачу с ошибкой")
+        if not (UPLOADS / job["filename"]).exists():
+            raise HTTPException(409, "Файл задачи уже удалён: загрузите видео заново")
+        _requeue(c, job_id)
+    return {"id": job_id, "status": "queued"}
 
 
 @app.get("/api/jobs")
