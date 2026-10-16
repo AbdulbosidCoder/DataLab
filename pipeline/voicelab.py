@@ -5,7 +5,7 @@ POST /v1/stt  (multipart: audio, language, include_speakers; заголовок 
 GET  /v1/stt/transcriptions/{id}            опрос до status = completed | failed
 
 Ограничения API: до 500 MiB на файл, от 0.5 с; форматы MP3, WAV, M4A/AAC, OGG/Opus, WebM/Opus, FLAC.
-Повторы при 429/500/503 и обрыве идут с тем же Idempotency-Key, поэтому кредиты не списываются дважды.
+Повторы при 429/500/503, обрыве соединения и недочитанном ответе (IncompleteRead) идут с тем же Idempotency-Key, поэтому кредиты не списываются дважды.
 """
 import json
 import os
@@ -80,7 +80,8 @@ def _request(method: str, path: str, attempts: int = 5, **kw) -> requests.Respon
                 fh.seek(0)
         try:
             resp = requests.request(method, f"{BASE_URL}{path}", **kw)
-        except (requests.ConnectionError, requests.Timeout) as e:
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ContentDecodingError) as e:  # обрыв посреди ответа: IncompleteRead
             last = e
             _wait(None, attempt)
             continue
