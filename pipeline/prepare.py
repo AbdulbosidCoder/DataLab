@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import db  # noqa: E402
-from pipeline import voicelab  # noqa: E402
+from pipeline import usage, voicelab  # noqa: E402
 
 MEDIA_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4a", ".mp3", ".wav", ".ogg", ".flac"}
 SAMPLE_RATE = 16000
@@ -64,9 +64,18 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
         print(f"  VoiceLab: отправка {f.name} ({f.stat().st_size / 1e6:.1f} MB) ...")
         with wave.open(str(wav), "rb") as r:
             duration = r.getnframes() / r.getframerate()
-        result = voicelab.transcribe(f, language=args.language,
-                                     include_speakers=not args.no_speakers, duration_s=duration,
-                                     state_file=cache.with_suffix(".pending.json"))
+        bill: dict = {}
+        try:
+            result = voicelab.transcribe(f, language=args.language,
+                                         include_speakers=not args.no_speakers, duration_s=duration,
+                                         state_file=cache.with_suffix(".pending.json"), billing=bill)
+        except voicelab.VoiceLabError:
+            if bill.get("job_id"):  # задача была создана и упала: резерв кредитов VoiceLab возвращает
+                usage.record(cache.parent.parent, wav.stem, "failed", duration, 0, f.name, bill["job_id"])
+            raise
+    dur = (bill.get("duration_ms") or duration * 1000) / 1000
+    usage.record(cache.parent.parent, wav.stem, "charged", dur, bill.get("credits"), f.name, bill.get("job_id"))
+    print(f"  VoiceLab: {dur / 60:.1f} мин, кредитов ≈{bill.get('credits') if bill.get('credits') is not None else '?'}")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -249,6 +258,7 @@ def process(src: Path, out: Path, conn, args) -> dict:
             if created:
                 wav.unlink(missing_ok=True)
             print(f"  дубликат: тот же звук, что у {owner}; VoiceLab не вызывался")
+            usage.record(out, video, "duplicate", total, None, src.name)
             return {"video": video, "duplicate_of": owner, "segments": 0, "hours": 0.0,
                     "short": 0, "long": 0, "overlap_dropped": 0}
         if not cache.exists():  # дубль разрешён: берём готовую расшифровку, а не платим ещё раз
@@ -339,7 +349,7 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     conn = db.connect(args.db or out / "speech_lab.db")
 
-    summary = []
+    summary, seen = [], len(usage.load(out))
     for f in files:
         try:
             summary.append(process(f, out, conn, args))
@@ -352,6 +362,10 @@ def main() -> None:
     hours = sum(s["hours"] for s in summary)
     print(f"\nГотово: видео {len(summary)}/{len(files)}, сегментов в этом запуске "
           f"{sum(s['segments'] for s in summary)} ({hours:.2f} ч), всего в manifest.jsonl: {n}")
+    run = usage.load(out)[seen:]
+    spent = sum(r["credits"] or 0 for r in run if r["event"] == "charged")
+    print(f"VoiceLab в этом запуске: {spent} кредитов, {sum(r['event'] == 'charged' for r in run)} файлов; "
+          f"всего: {usage.fmt(usage.summary(out)['total'])}")
 
 
 if __name__ == "__main__":

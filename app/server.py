@@ -22,7 +22,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from app import bundle, db
-from pipeline import prepare, voicelab
+from pipeline import prepare, usage, voicelab
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("DATA_DIR", ROOT / "data")).resolve()
@@ -529,6 +529,12 @@ def trash_delete(name: str):
     with _trash_lock:
         shutil.rmtree(_trash_dir(name))
     return {"ok": True}
+
+
+@app.get("/api/usage")
+def get_usage():
+    """Расход VoiceLab: итого, по дням и журнал (data/usage.jsonl)."""
+    return usage.summary(DATA)
 
 
 @app.get("/api/export.jsonl", response_class=PlainTextResponse)
