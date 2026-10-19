@@ -1,10 +1,12 @@
 """Учёт расхода STT: каждая отправка и каждый пропущенный дубликат пишутся в data/usage.jsonl.
 
 Файл только дописывается и не уходит в корзину при «Очистить»: потраченные кредиты остаются потраченными.
-Строка: {"time", "video", "file", "event", "duration_s", "credits", "job_id", "provider"}
+Строка: {"time", "video", "file", "event", "duration_s", "credits", "job_id", "provider", "requests"}
     provider = xonsaroy | voicelab (у старых строк поля нет: это voicelab)
     event = charged    файл расшифрован, credits = оценка VoiceLab по фактической длительности
-                       (у xonsaroy кредитов нет: credits = None, duration_s = отправленная речь)
+                       (у xonsaroy кредитов нет: credits = None, duration_s = аудио по ответам API,
+                       requests = число запросов, только за этот запуск)
+            partial    xonsaroy упал посередине: отправленные куски учтены (минуты и запросы считаются)
             failed     задача VoiceLab упала, резерв кредитов возвращается (credits = 0)
             duplicate  тот же звук уже был, VoiceLab не вызывался (duration_s = сэкономлено)
 """
@@ -19,10 +21,11 @@ _lock = threading.Lock()
 
 
 def record(out: Path, video: str, event: str, duration_s: float = 0.0, credits: int | None = None,
-           file: str | None = None, job_id: str | None = None, provider: str = "voicelab") -> dict:
+           file: str | None = None, job_id: str | None = None, provider: str = "voicelab",
+           requests: int | None = None) -> dict:
     entry = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "video": video, "file": file, "event": event,
              "duration_s": round(duration_s or 0.0, 3), "credits": credits, "job_id": job_id,
-             "provider": provider}
+             "provider": provider, "requests": requests}
     with _lock:
         out.mkdir(parents=True, exist_ok=True)
         with (out / LOG).open("a", encoding="utf-8") as f:
@@ -48,12 +51,16 @@ def summary(out: Path) -> dict:
     в unknown; у xonsaroy кредитов нет вообще, его строки дают только минуты."""
     rows = load(out)
     total = {"credits": 0, "minutes": 0.0, "files": 0, "failed": 0, "unknown": 0,
-             "saved_files": 0, "saved_minutes": 0.0}
-    days: dict[str, dict] = defaultdict(lambda: {"credits": 0, "minutes": 0.0, "files": 0})
+             "saved_files": 0, "saved_minutes": 0.0, "requests": 0}
+    days: dict[str, dict] = defaultdict(lambda: {"credits": 0, "minutes": 0.0, "files": 0, "requests": 0})
     for r in rows:
         mins = (r.get("duration_s") or 0) / 60
-        if r["event"] == "charged":
+        if r["event"] in ("charged", "partial"):
             day = days[r["time"][:10]]
+            total["requests"] += r.get("requests") or 0; day["requests"] += r.get("requests") or 0
+            if r["event"] == "partial":  # файл не готов, но потраченное аудио считается
+                total["minutes"] += mins; day["minutes"] += mins
+                continue
             total["files"] += 1; day["files"] += 1
             total["minutes"] += mins; day["minutes"] += mins
             if r.get("credits") is None:

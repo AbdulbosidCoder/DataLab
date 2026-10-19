@@ -101,20 +101,32 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
 
 
 def get_xonsaroy(wav: Path, cache: Path, args) -> dict:
-    """Xonsaroy без кредитов: в журнал расхода пишется только длительность отправленного аудио."""
+    """Xonsaroy без кредитов: в журнал расхода пишутся минуты аудио и число запросов за этот запуск
+    (как в дашборде Xonsaroy). Упавший посередине запуск тоже пишется: отправленные куски уже потрачены."""
     print("  Xonsaroy: поиск пауз и распознавание кусков ...")
-    last = [0.0]
+    last, bill = [0.0], {}
+    on_progress = getattr(args, "on_progress", None)  # веб-сервер показывает ход в сообщении задачи
 
-    def progress(done: int, total: int) -> None:
+    def progress(done: int, total: int, b: dict) -> None:
+        if on_progress:
+            on_progress(f"Распознавание: {done}/{total} кусков, отправлено {b.get('audio_seconds', 0) / 60:.1f} мин")
         if time.time() - last[0] > 10 or done == total:
             last[0] = time.time()
             print(f"  Xonsaroy: {done}/{total} кусков")
 
-    result = xonsaroy.transcribe(wav, min_dur=args.min_dur, max_dur=args.max_dur,
-                                 state_file=cache.parent / f"{wav.stem}.xonsaroy.partial.json", progress=progress)
-    usage.record(cache.parent.parent, wav.stem, "charged", result["audio_seconds"], None, wav.name,
-                 provider="xonsaroy")
-    print(f"  Xonsaroy: отправлено {result['audio_seconds'] / 60:.1f} мин речи, "
+    def record(event: str) -> None:
+        if bill.get("requests"):
+            usage.record(cache.parent.parent, wav.stem, event, bill["audio_seconds"], None, wav.name,
+                         provider="xonsaroy", requests=bill["requests"])
+
+    try:
+        result = xonsaroy.transcribe(wav, min_dur=args.min_dur, max_dur=args.max_dur, billing=bill,
+                                     state_file=cache.parent / f"{wav.stem}.xonsaroy.partial.json", progress=progress)
+    except xonsaroy.XonsaroyError:
+        record("partial")
+        raise
+    record("charged")
+    print(f"  Xonsaroy: отправлено {bill.get('audio_seconds', 0) / 60:.1f} мин, запросов {bill.get('requests', 0)}, "
           f"распознано кусков {len(result['segments'])}")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

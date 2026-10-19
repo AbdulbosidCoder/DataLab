@@ -409,21 +409,22 @@ $("bTrash").onclick = showTrash;
 
 // ---------- расход STT ----------
 const mins = (m) => m >= 60 ? `${Math.floor(m / 60)} ч ${Math.round(m % 60)} мин` : `${m.toFixed(1)} мин`;
-const EVENTS = { charged: "расшифровано", failed: "ошибка, не списано", duplicate: "дубль, не отправлялся" };
+const EVENTS = { charged: "расшифровано", partial: "упало, отправленное учтено", failed: "ошибка, не списано", duplicate: "дубль, не отправлялся" };
 async function refreshUsage() {
   const u = await api("/api/usage"), t = u.total;
   $("bUsage").textContent = `STT: ${mins(t.minutes)}` + (t.credits || t.unknown ? ` · ${t.credits} кр.${t.unknown ? "+?" : ""}` : "");
-  $("bUsage").title = `Отправлено ${mins(t.minutes)} аудио (файлов: ${t.files}), кредитов VoiceLab: ${t.credits}. Нажмите для подробностей`;
+  $("bUsage").title = `Отправлено ${mins(t.minutes)} аудио, запросов Xonsaroy: ${t.requests || 0}, файлов: ${t.files}, кредитов VoiceLab: ${t.credits}. Нажмите для подробностей`;
   return u;
 }
 async function showUsage() {
   const u = await refreshUsage(), t = u.total;
   $("mTitle").textContent = "Расход STT"; document.querySelector("#modal .box").classList.add("wide");
-  $("mNote").textContent = "Каждая отправка в STT записывается в data/usage.jsonl. Xonsaroy кредитов не списывает, учитываются минуты отправленной речи. Кредиты VoiceLab считаются по фактической длительности, как их списывает VoiceLab. Очистка журнал не трогает.";
+  $("mNote").textContent = "Каждая отправка в STT записывается в data/usage.jsonl. У Xonsaroy нет кредитов и токенов: учитываются минуты аудио и число запросов, как в его дашборде (Settings → API keys). Кредиты VoiceLab считаются по фактической длительности, как их списывает VoiceLab. Очистка журнал не трогает.";
   const cell = (v) => `<td>${v}</td>`;
   $("mBody").innerHTML = `<div class="ucards">
       <div><b>${t.credits}${t.unknown ? "+?" : ""}</b><span>кредитов VoiceLab</span></div>
       <div><b>${mins(t.minutes)}</b><span>аудио отправлено (${t.files} файлов)</span></div>
+      <div><b>${t.requests || 0}</b><span>запросов Xonsaroy</span></div>
       <div><b>${mins(t.saved_minutes)}</b><span>сэкономлено на дублях (${t.saved_files})</span></div></div>
     ${t.unknown ? `<div class="muted" style="font-size:12px">У ${t.unknown} файлов VoiceLab не вернул оценку кредитов.</div>` : ""}
     <h4>По дням</h4><table class="utbl"><tr><th>День</th><th>Кредиты</th><th>Аудио</th><th>Файлы</th></tr>
