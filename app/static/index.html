@@ -32,6 +32,8 @@
   .top { display: grid; grid-template-columns: 250px 1fr 340px; min-height: 0; border-bottom: 1px solid var(--line); }
   .panel { background: var(--panel); min-height: 0; overflow: auto; }
   .panel h3 { margin: 0; padding: 8px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--panel2); position: sticky; top: 0; z-index: 1; }
+  .panel h3.vhead { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .vhead select { font-size: 11px; text-transform: none; letter-spacing: 0; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
   .pad { padding: 10px; }
   #drop { border: 1px dashed #4b4d55; border-radius: 6px; padding: 14px 8px; text-align: center; color: var(--muted); cursor: pointer; }
   #drop.over { border-color: var(--accent); color: var(--accent); }
@@ -351,12 +353,20 @@ async function refreshStats() {
   const s = await api("/api/stats");
   const n = { pending: "ждут", approved: "одобрено", rejected: "брак", overlap: "наложение" };
   $("stats").innerHTML = Object.entries(n).map(([k, l]) => `<span>${l}: <b>${(s.by_status[k] || {}).count || 0}</b></span>`).join("");
-  $("videos").innerHTML = `<h3>Видео</h3>` + (s.videos.map((x) => `<div class="clip-item ${x.video === video ? "active" : ""}" data-v="${esc(x.video)}">
+  const sort = store.get("videoSort") || "name";
+  const SORTS = { name: ["Имя А→Я", (a, b) => a.video.localeCompare(b.video)], name_desc: ["Имя Я→А", (a, b) => b.video.localeCompare(a.video)],
+    new: ["Сначала новые", (a, b) => b.first_id - a.first_id], old: ["Сначала старые", (a, b) => a.first_id - b.first_id],
+    most: ["Больше сегментов", (a, b) => b.total - a.total || a.video.localeCompare(b.video)],
+    least: ["Меньше сегментов", (a, b) => a.total - b.total || a.video.localeCompare(b.video)] };
+  s.videos.sort((SORTS[sort] || SORTS.name)[1]);
+  $("videos").innerHTML = `<h3 class="vhead">Видео <select id="vsort" title="Сортировка видео">${Object.entries(SORTS).map(([k, [l]]) =>
+    `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select></h3>` + (s.videos.map((x) => `<div class="clip-item ${x.video === video ? "active" : ""}" data-v="${esc(x.video)}" ${x.added ? `title="Добавлено ${esc(x.added)} UTC"` : ""}>
     <div class="thumb">🎬</div><div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">${esc(x.video)}</div>
     <div class="prog"><i style="width:${x.total ? 100 * x.approved / x.total : 0}%"></i></div>
     <div class="muted" style="font-size:11px">${x.approved}/${x.total} одобрено</div></div>
     <a class="zip" href="/api/export.zip?video=${encodeURIComponent(x.video)}" title="Скачать ZIP: видео, аудио, сегменты, текст" onclick="event.stopPropagation()">⬇ ZIP</a></div>`).join("") || '<div class="empty">Пусто</div>');
   document.querySelectorAll(".clip-item").forEach((el) => el.onclick = () => openVideo(el.dataset.v));
+  $("vsort").onchange = (e) => { store.set("videoSort", e.target.value); refreshStats(); };
   if (!data && s.videos.length) openVideo(s.videos.some((x) => x.video === video) ? video : s.videos[0].video);
 }
 

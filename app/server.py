@@ -169,8 +169,11 @@ def stats():
     with conn() as c:
         rows = c.execute("SELECT status, COUNT(*) n, COALESCE(SUM(duration), 0) d FROM segments GROUP BY status")
         by = {r["status"]: {"count": r["n"], "hours": round(r["d"] / 3600, 3)} for r in rows}
+        # first_id: порядок добавления (сегменты видео пишутся в БД разом); added: время загрузки через веб, если было
         videos = [dict(r) for r in c.execute(
-            "SELECT video, COUNT(*) total, SUM(status = 'approved') approved FROM segments GROUP BY video ORDER BY video")]
+            "SELECT s.video, COUNT(*) total, SUM(s.status = 'approved') approved, MIN(s.id) first_id, "
+            "(SELECT MIN(j.created_at) FROM jobs j WHERE j.video = s.video) added "
+            "FROM segments s GROUP BY s.video ORDER BY s.video")]
     return {"by_status": by, "videos": videos}
 
 
