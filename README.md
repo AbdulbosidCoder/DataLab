@@ -1,7 +1,23 @@
 # DataLab — узбекский речевой датасет
 
-MP4 → wav 16 kHz mono → транскрипция **VoiceLab STT** (текст + спикеры) → сегменты 1.5–15 с → SQLite + файлы
+MP4 → wav 16 kHz mono → транскрипция **Xonsaroy STT** (или VoiceLab) → сегменты 1.5–15 с → SQLite + файлы
 → проверка и правка текста каждого сегмента в веб-интерфейсе.
+
+## Какой STT используется
+
+`STT_PROVIDER` в `.env` (или флаг `--provider`):
+
+- **`xonsaroy`** (по умолчанию). API отдаёт только сплошной текст, без таймкодов и спикеров. Поэтому паузы ищутся
+  локально по громкости, аудио режется на куски 1.5–15 с, и каждый кусок распознаётся отдельно
+  (`POST /api/v1/transcriptions`, не больше 2 запросов одновременно, повтор только на 429/502/503 и обрыв связи).
+  Таймкод сегмента = границы куска. Все сегменты видео получают `SPEAKER_00`: разных людей разводит редактор в
+  студии (переназначение спикера, Alt+1..9). Если упало посередине, «↻ Повторить» продолжит с первого
+  нераспознанного куска (`transcripts/<video>.xonsaroy.partial.json`). Ключ: `XONSAROY_API_KEY=xs_stt_...`.
+- **`voicelab`**. Весь файл целиком, VoiceLab сам режет на реплики и делит спикеров, тратит кредиты.
+  Ключ: `VOICELAB_API_KEY=vlk_...`.
+
+Уже готовые расшифровки (`transcripts/<video>.voicelab.json`) при смене сервиса не переделываются; чтобы прогнать
+видео через другой сервис, удалите этот файл или запустите с `--force`.
 
 ## Установка
 
@@ -10,7 +26,7 @@ MP4 → wav 16 kHz mono → транскрипция **VoiceLab STT** (текс�
 ```bash
 pip install -r requirements.txt
 cp .env.example .env      # Windows: copy .env.example .env
-# в .env впишите VOICELAB_API_KEY=vlk_...
+# в .env впишите XONSAROY_API_KEY=xs_stt_... (или STT_PROVIDER=voicelab и VOICELAB_API_KEY)
 ```
 
 ## Запуск без Docker
@@ -20,14 +36,14 @@ uvicorn app.server:app --port 8000   # веб-интерфейс
 python -m pipeline.prepare           # или пакетно: видео из data/videos/
 ```
 
-Флаги: `--videos`, `--out`, `--language uz`, `--min-dur 1.5`, `--max-dur 15`, `--max-gap 0.5`,
-`--keep-overlap` (оставить наложения со статусом `overlap`), `--no-speakers`,
-`--upload-format wav|flac|mp3` (если большой файл не принимается, попробуйте `mp3`), `--force`, `--allow-duplicates`.
+Флаги: `--provider xonsaroy|voicelab`, `--videos`, `--out`, `--language uz`, `--min-dur 1.5`, `--max-dur 15`, `--max-gap 0.5`,
+`--keep-overlap` (оставить наложения со статусом `overlap`), `--no-speakers` (только voicelab),
+`--upload-format wav|flac|mp3` (только voicelab; если большой файл не принимается, попробуйте `mp3`), `--force`, `--allow-duplicates`.
 
-Ответ VoiceLab кэшируется в `transcripts/<video>.voicelab.json`, поэтому повторный запуск
-не отправляет видео заново и не тратит кредиты (кроме `--force`).
+Результат STT кэшируется в `transcripts/<video>.voicelab.json` (имя историческое, поле `provider` говорит, кто его
+сделал), поэтому повторный запуск не отправляет видео заново (кроме `--force`).
 
-Защита от дублей, чтобы не платить VoiceLab дважды:
+Защита от дублей, чтобы не отправлять в STT дважды:
 - **Тот же файл** (совпадает sha256) веб-интерфейс не принимает и сообщает, под каким именем он уже загружен.
 - **Тот же звук в другом файле** (другое имя, MKV вместо MP4, перекодированное видео) определяется по отпечатку
   громкости (`transcripts/audio_index.json`). Такое видео пропускается со статусом «дубликат», в VoiceLab не отправляется
@@ -76,7 +92,8 @@ docker compose up -d --build      # открыть http://localhost:8000
 Копия архива остаётся в `data/exports/`. Без браузера: `python -m app.bundle [--status approved] [--video NAME]`
 (в Docker: `docker compose run --rm --entrypoint python prepare -m app.bundle`). «Экспорт approved.jsonl» отдаёт проверенные сегменты.
 
-**Расход VoiceLab.** Кнопка «VoiceLab: N кр.» в шапке показывает, сколько кредитов потрачено. По щелчку открываются итоги,
+**Расход STT.** Кнопка «STT: N мин» в шапке показывает, сколько аудио отправлено (и кредитов VoiceLab, если он
+использовался). Xonsaroy кредитов не списывает, для него пишутся минуты отправленной речи. По щелчку открываются итоги,
 расход по дням и журнал: какое видео, сколько минут аудио и кредитов, какие дубли не отправлялись. Кредиты берутся из
 `GET /v1/stt/preflight` по фактической длительности файла (так VoiceLab и списывает; запрос бесплатный). Упавшие задачи
 записываются с 0 кредитов, потому что VoiceLab возвращает их резерв. Журнал лежит в `data/usage.jsonl`, кнопка «Очистить»
@@ -102,11 +119,11 @@ docker compose run --rm prepare   # флаги передаются как ес�
 | `audio/<video>.wav` | полное аудио, 16 kHz mono 16-bit PCM |
 | `segments/<video>/<video>_<start_ms>_<end_ms>.wav` | реплики одного спикера 1.5–15 с |
 | `transcripts/<video>.txt` / `.srt` | полная расшифровка со спикерами и таймкодами |
-| `transcripts/<video>.voicelab.json` | сырой ответ VoiceLab |
+| `transcripts/<video>.voicelab.json` | сегменты от STT (Xonsaroy или VoiceLab) |
 | `manifest.jsonl` | все сегменты: `audio_filepath`, `duration`, `text`, `speaker`, `video`, `status` |
 | `speech_lab.db` | SQLite, таблица `segments` (схема speech-lab) |
-| `usage.jsonl` | журнал расхода VoiceLab: отправки, кредиты, пропущенные дубли |
+| `usage.jsonl` | журнал расхода STT: отправки, минуты, кредиты VoiceLab, пропущенные дубли |
 | `exports/*.zip` | архивы «видео + аудио + сегменты + текст», собранные кнопкой ZIP |
 | `exports/transcripts/<video>.srt` / `.txt` | последние скачанные тексты с правками и именами спикеров |
 
-`speaker` = `<video>_SPEAKER_xx`, потому что VoiceLab нумерует спикеров заново в каждом видео.
+`speaker` = `<video>_SPEAKER_xx`, потому что STT нумерует спикеров заново в каждом видео.

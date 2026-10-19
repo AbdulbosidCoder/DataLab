@@ -171,7 +171,7 @@
       <a id="curTxt" hidden>TXT этого видео</a>
     </div>
   </details>
-  <button id="bUsage" title="Сколько кредитов VoiceLab потрачено">VoiceLab: …</button>
+  <button id="bUsage" title="Сколько аудио отправлено в STT">STT: …</button>
   <button id="bTrash" title="Очищенные видео: можно вернуть">Корзина</button>
   <button id="bClear" class="b-bad" title="Убрать все видео в корзину (можно вернуть)">🗑 Очистить</button>
 </header>
@@ -233,7 +233,7 @@
         <button id="fixap" title="o' g' → oʻ gʻ, остальные → ʼ">Исправить апострофы</button>
       </div>
       <div id="warn"></div>
-      <div class="muted" style="font-size:12px;margin-top:4px">Черновик VoiceLab: <span id="draft"></span> <a href="#" id="restore">вернуть</a></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">Черновик STT: <span id="draft"></span> <a href="#" id="restore">вернуть</a></div>
       <div class="row actions" style="margin-top:12px">
         <button class="b-ok" id="bApprove">✓ Одобрить</button>
         <button class="b-bad" id="bReject">✕ Брак</button>
@@ -316,7 +316,7 @@ async function uploadFiles(files) {
     const fd = new FormData(); fd.append("file", f);
     try {
       const r = await api("/api/upload", { method: "POST", body: fd });
-      $("upmsg").textContent = r.retried ? `${f.name}: повтор упавшей задачи, кредиты заново не спишутся` : `${f.name}: в очереди на VoiceLab`;
+      $("upmsg").textContent = r.retried ? `${f.name}: повтор упавшей задачи, распознанное заново не отправится` : `${f.name}: в очереди на распознавание`;
     }
     catch (e) { $("upmsg").textContent = `Ошибка: ${e.message}`; }
   }
@@ -330,7 +330,7 @@ async function refreshJobs() {
   const hidden = JSON.parse(store.get("hiddenJobs") || "[]");
   const shown = jobs.filter((j) => j.status !== "done" && !hidden.includes(j.id)).slice(0, 8);
   $("jobs").innerHTML = shown.map((j) => `<div class="job"><div class="jrow"><span class="jname" title="${esc(j.filename)}">${esc(j.filename)}</span>
-    ${j.status === "error" ? `<button class="jx" data-retry="${j.id}" title="Повторить. Уже оплаченная расшифровка VoiceLab не спишется снова">↻ Повторить</button>` : ""}
+    ${j.status === "error" ? `<button class="jx" data-retry="${j.id}" title="Повторить. Уже распознанное заново не отправится">↻ Повторить</button>` : ""}
     ${j.status === "error" || j.status === "duplicate" ? `<button class="jx" data-job="${j.id}" title="Скрыть">✕</button>` : ""}</div>
     <span class="st-${j.status}">${st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
   document.querySelectorAll("[data-retry]").forEach((b) => b.onclick = async () => {
@@ -407,29 +407,29 @@ async function showTrash() {
 }
 $("bTrash").onclick = showTrash;
 
-// ---------- расход VoiceLab ----------
+// ---------- расход STT ----------
 const mins = (m) => m >= 60 ? `${Math.floor(m / 60)} ч ${Math.round(m % 60)} мин` : `${m.toFixed(1)} мин`;
 const EVENTS = { charged: "расшифровано", failed: "ошибка, не списано", duplicate: "дубль, не отправлялся" };
 async function refreshUsage() {
   const u = await api("/api/usage"), t = u.total;
-  $("bUsage").textContent = `VoiceLab: ${t.credits} кр.${t.unknown ? "+?" : ""}`;
-  $("bUsage").title = `Потрачено ${t.credits} кредитов на ${mins(t.minutes)} аудио (файлов: ${t.files}). Нажмите для подробностей`;
+  $("bUsage").textContent = `STT: ${mins(t.minutes)}` + (t.credits || t.unknown ? ` · ${t.credits} кр.${t.unknown ? "+?" : ""}` : "");
+  $("bUsage").title = `Отправлено ${mins(t.minutes)} аудио (файлов: ${t.files}), кредитов VoiceLab: ${t.credits}. Нажмите для подробностей`;
   return u;
 }
 async function showUsage() {
   const u = await refreshUsage(), t = u.total;
-  $("mTitle").textContent = "Расход VoiceLab"; document.querySelector("#modal .box").classList.add("wide");
-  $("mNote").textContent = "Каждая отправка в VoiceLab записывается в data/usage.jsonl. Кредиты считаются по фактической длительности, как их списывает VoiceLab. Очистка журнал не трогает.";
+  $("mTitle").textContent = "Расход STT"; document.querySelector("#modal .box").classList.add("wide");
+  $("mNote").textContent = "Каждая отправка в STT записывается в data/usage.jsonl. Xonsaroy кредитов не списывает, учитываются минуты отправленной речи. Кредиты VoiceLab считаются по фактической длительности, как их списывает VoiceLab. Очистка журнал не трогает.";
   const cell = (v) => `<td>${v}</td>`;
   $("mBody").innerHTML = `<div class="ucards">
-      <div><b>${t.credits}${t.unknown ? "+?" : ""}</b><span>кредитов потрачено</span></div>
+      <div><b>${t.credits}${t.unknown ? "+?" : ""}</b><span>кредитов VoiceLab</span></div>
       <div><b>${mins(t.minutes)}</b><span>аудио отправлено (${t.files} файлов)</span></div>
       <div><b>${mins(t.saved_minutes)}</b><span>сэкономлено на дублях (${t.saved_files})</span></div></div>
     ${t.unknown ? `<div class="muted" style="font-size:12px">У ${t.unknown} файлов VoiceLab не вернул оценку кредитов.</div>` : ""}
     <h4>По дням</h4><table class="utbl"><tr><th>День</th><th>Кредиты</th><th>Аудио</th><th>Файлы</th></tr>
       ${u.by_day.map((d) => `<tr>${cell(d.day)}${cell(d.credits)}${cell(mins(d.minutes))}${cell(d.files)}</tr>`).join("") || '<tr><td colspan="4" class="muted">Пока ничего</td></tr>'}</table>
-    <h4>Журнал</h4><table class="utbl"><tr><th>Время</th><th>Видео</th><th>Событие</th><th>Аудио</th><th>Кредиты</th></tr>
-      ${u.rows.slice(0, 300).map((r) => `<tr>${cell(esc(r.time.replace("T", " ")))}${cell(esc(r.video))}${cell(EVENTS[r.event] || esc(r.event))}${cell(mins(r.duration_s / 60))}${cell(r.event === "charged" ? (r.credits ?? "?") : "—")}</tr>`).join("") || '<tr><td colspan="5" class="muted">Пока ничего</td></tr>'}</table>`;
+    <h4>Журнал</h4><table class="utbl"><tr><th>Время</th><th>Видео</th><th>Сервис</th><th>Событие</th><th>Аудио</th><th>Кредиты</th></tr>
+      ${u.rows.slice(0, 300).map((r) => `<tr>${cell(esc(r.time.replace("T", " ")))}${cell(esc(r.video))}${cell(esc(r.provider || "voicelab"))}${cell(EVENTS[r.event] || esc(r.event))}${cell(mins(r.duration_s / 60))}${cell(r.event === "charged" && (r.provider || "voicelab") === "voicelab" ? (r.credits ?? "?") : "—")}</tr>`).join("") || '<tr><td colspan="6" class="muted">Пока ничего</td></tr>'}</table>`;
   $("modal").hidden = false;
 }
 $("bUsage").onclick = showUsage;

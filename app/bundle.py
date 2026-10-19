@@ -7,7 +7,7 @@
     <video>/segments/*.wav              нарезанные реплики
     <video>/transcript.txt / .srt       расшифровка с правками разметчиков
     <video>/segments.jsonl              сегменты этого видео
-    <video>/voicelab.json               сырой ответ VoiceLab
+    <video>/voicelab.json               сегменты от STT (Xonsaroy или VoiceLab, см. поле provider)
 """
 import csv
 import io
