@@ -55,11 +55,24 @@ def safe_name(stem: str) -> str:
     return re.sub(r"[^\w\-]+", "_", stem, flags=re.UNICODE).strip("_") or "video"
 
 
+class MediaError(RuntimeError):
+    pass
+
+
 def to_wav(src: Path, dst: Path) -> None:
+    """ffmpeg -> wav 16 kHz mono. При ошибке в сообщение попадает причина от ffmpeg, а не только код выхода."""
+    if not src.is_file():
+        raise MediaError(f"Файл {src.name} не найден в {src.parent}: загрузите его заново")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-vn",
-                    "-ac", "1", "-ar", str(SAMPLE_RATE), "-sample_fmt", "s16", str(dst)],
-                   check=True)
+    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
+                        "-ac", "1", "-ar", str(SAMPLE_RATE), "-sample_fmt", "s16", str(dst)],
+                       capture_output=True, text=True, errors="replace")
+    if r.returncode != 0:
+        dst.unlink(missing_ok=True)  # недописанный wav не должен считаться готовым при повторе
+        why = " ".join(r.stderr.strip().splitlines()[-3:]) or f"код {r.returncode}"
+        if "no audio" in why.lower() or "does not contain any stream" in why.lower() or "matches no streams" in why.lower():
+            why = f"в файле нет звуковой дорожки ({why})"
+        raise MediaError(f"ffmpeg не смог прочитать {src.name}: {why}")
 
 
 def upload_file(wav: Path, fmt: str, tmpdir: Path) -> Path:
@@ -407,7 +420,7 @@ def main() -> None:
     for f in files:
         try:
             summary.append(process(f, out, conn, args))
-        except (*STTError, subprocess.CalledProcessError) as e:
+        except (*STTError, MediaError, subprocess.CalledProcessError) as e:
             print(f"  ОШИБКА: {e}", file=sys.stderr)
     dups = [s for s in summary if s.get("duplicate_of")]
     for s in dups:

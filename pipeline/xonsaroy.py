@@ -29,7 +29,7 @@ MAX_CONCURRENT = 2      # лимит сервера на один ключ
 FRAME = 0.03            # окно VAD, с
 MIN_SILENCE = 0.3       # пауза короче этого не разрывает речь, с
 MIN_SPEECH = 0.2        # всплеск короче этого считается шумом, с
-JOIN_GAP = 1.0          # соседние куски речи с паузой до JOIN_GAP склеиваются (пока не длиннее max_dur), с
+JOIN_GAP = 1.5          # паузы до JOIN_GAP не обязательная граница: кусок режется в них, только если он длиннее max_dur, с
 EDGE = 0.1              # запас тишины по краям куска, отправляемого в API, с
 
 
@@ -103,14 +103,29 @@ def _energies(wav: Path) -> tuple[list[int], int]:
     return out, rate
 
 
+def _smooth(energy: list[int], a: int, b: int, w: int = 17) -> list[float]:
+    """Скользящее среднее громкости (~0.5 с) на [a, b): короткая тихая точка внутри слова или фразы не перебивает настоящую паузу."""
+    h = w // 2
+    pre = [0]
+    for v in energy[a:b]:
+        pre.append(pre[-1] + v)
+    n = b - a
+    return [(pre[min(n, k + h + 1)] - pre[max(0, k - h)]) / (min(n, k + h + 1) - max(0, k - h)) for k in range(n)]
+
+
 def speech_regions(energy: list[int]) -> list[tuple[int, int]]:
-    """Отрезки речи в номерах окон [start, end). Порог от уровня шума (10-й перцентиль)."""
+    """Отрезки речи в номерах окон [start, end). Порог от уровня шума (10-й перцентиль).
+
+    Решение принимается по громкости, сглаженной на ~0.15 с: в шумной записи отдельные громкие окна
+    шума не разрывают паузу между фразами, а тихие окна внутри слова не разрывают слово.
+    """
     if not energy:
         return []
-    srt = sorted(energy)
+    sm = _smooth(energy, 0, len(energy), 5)
+    srt = sorted(sm)
     floor, median = srt[len(srt) // 10], srt[len(srt) // 2]
-    thr = max(100, min(floor * 3, median))
-    flags = [e > thr for e in energy]
+    thr = max(100, min(floor * 2, median))
+    flags = [e >= thr for e in sm]
     regions, i, n = [], 0, len(flags)
     while i < n:
         if not flags[i]:
@@ -127,28 +142,49 @@ def speech_regions(energy: list[int]) -> list[tuple[int, int]]:
     return [(a, b) for a, b in regions if (b - a) * FRAME >= MIN_SPEECH]
 
 
-def _split(a: int, b: int, energy: list[int], max_len: int) -> list[tuple[int, int]]:
-    """Режет слишком длинный отрезок в самом тихом окне второй половины допустимой длины."""
-    out = []
-    while b - a > max_len:
+def _best_split(regions: list[tuple[int, int]], energy: list[int], max_len: int, min_len: int) -> list[tuple[int, int]]:
+    """Делит группу отрезков речи (паузы между ними до JOIN_GAP) на куски не длиннее max_len.
+
+    Группа, которая влезает в max_len, остаётся одним куском, даже с паузами внутри: фраза не рвётся.
+    Иначе режем в самой длинной паузе группы, где обе части не короче min_len (паузу, после которой
+    остаётся обрывок, берём только если других нет), и повторяем для каждой половины. Сплошная речь
+    без пауз режется в самой тихой точке сглаженной громкости, подальше от краёв.
+    """
+    a, b = regions[0][0], regions[-1][1]
+    if b - a <= max_len:
+        return [(a, b)]
+    if len(regions) > 1:
+        def score(i: int) -> tuple:
+            left, right = regions[i][1] - a, b - regions[i + 1][0]
+            return (left >= min_len and right >= min_len, regions[i + 1][0] - regions[i][1])
+        i = max(range(len(regions) - 1), key=score)
+        return (_best_split(regions[:i + 1], energy, max_len, min_len)
+                + _best_split(regions[i + 1:], energy, max_len, min_len))
+    # разрез, после которого обе части не длиннее max_len (одного разреза хватит), иначе в первом max_len
+    lo, hi = max(a + min_len, b - max_len), min(b - min_len, a + max_len)
+    if lo >= hi:
         lo, hi = a + max_len // 2, a + max_len
-        cut = min(range(lo, hi), key=lambda k: energy[k])
-        out.append((a, cut))
-        a = cut
-    out.append((a, b))
-    return out
+    sm = _smooth(energy, lo, hi)
+    cut = lo + min(range(len(sm)), key=lambda k: sm[k])
+    return (_best_split([(a, cut)], energy, max_len, min_len)
+            + _best_split([(cut, b)], energy, max_len, min_len))
 
 
 def plan_chunks(energy: list[int], min_dur: float, max_dur: float) -> list[tuple[float, float]]:
-    """Куски для отправки в API, секунды [start, end): длиной не больше max_dur, короче min_dur отбрасываются."""
+    """Куски для отправки в API, секунды [start, end): длиной не больше max_dur, короче min_dur отбрасываются.
+
+    Паузы длиннее JOIN_GAP всегда граница куска; более короткие паузы режут кусок, только если без этого
+    он длиннее max_dur, и тогда выбирается самая длинная из них (см. _best_split).
+    """
     max_len = int((max_dur - 2 * EDGE) / FRAME)
-    chunks: list[list[int]] = []
-    for a, b in speech_regions(energy):
-        for a, b in _split(a, b, energy, max_len):
-            if chunks and (a - chunks[-1][1]) * FRAME <= JOIN_GAP and b - chunks[-1][0] <= max_len:
-                chunks[-1][1] = b
-            else:
-                chunks.append([a, b])
+    min_len = int(min_dur / FRAME)
+    groups: list[list[tuple[int, int]]] = []
+    for r in speech_regions(energy):
+        if groups and (r[0] - groups[-1][-1][1]) * FRAME <= JOIN_GAP:
+            groups[-1].append(r)
+        else:
+            groups.append([r])
+    chunks = [list(c) for g in groups for c in _best_split(g, energy, max_len, min_len)]
     # запас EDGE по краям, но не больше половины паузы до соседа: на разрезе внутри речи куски не пересекаются
     bounds = [0, *(x for c in chunks for x in c), len(energy)]
     out = []
