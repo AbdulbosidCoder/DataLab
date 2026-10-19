@@ -1,8 +1,10 @@
-"""Учёт расхода VoiceLab: каждая платная отправка и каждый пропущенный дубликат пишутся в data/usage.jsonl.
+"""Учёт расхода STT: каждая отправка и каждый пропущенный дубликат пишутся в data/usage.jsonl.
 
 Файл только дописывается и не уходит в корзину при «Очистить»: потраченные кредиты остаются потраченными.
-Строка: {"time", "video", "file", "event", "duration_s", "credits", "job_id"}
+Строка: {"time", "video", "file", "event", "duration_s", "credits", "job_id", "provider"}
+    provider = xonsaroy | voicelab (у старых строк поля нет: это voicelab)
     event = charged    файл расшифрован, credits = оценка VoiceLab по фактической длительности
+                       (у xonsaroy кредитов нет: credits = None, duration_s = отправленная речь)
             failed     задача VoiceLab упала, резерв кредитов возвращается (credits = 0)
             duplicate  тот же звук уже был, VoiceLab не вызывался (duration_s = сэкономлено)
 """
@@ -17,9 +19,10 @@ _lock = threading.Lock()
 
 
 def record(out: Path, video: str, event: str, duration_s: float = 0.0, credits: int | None = None,
-           file: str | None = None, job_id: str | None = None) -> dict:
+           file: str | None = None, job_id: str | None = None, provider: str = "voicelab") -> dict:
     entry = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "video": video, "file": file, "event": event,
-             "duration_s": round(duration_s or 0.0, 3), "credits": credits, "job_id": job_id}
+             "duration_s": round(duration_s or 0.0, 3), "credits": credits, "job_id": job_id,
+             "provider": provider}
     with _lock:
         out.mkdir(parents=True, exist_ok=True)
         with (out / LOG).open("a", encoding="utf-8") as f:
@@ -41,7 +44,8 @@ def load(out: Path) -> list[dict]:
 
 
 def summary(out: Path) -> dict:
-    """Итого, по дням и по файлам. Кредиты None (оценку не получили) не суммируются, а считаются в unknown."""
+    """Итого, по дням и по файлам. Кредиты None у VoiceLab (оценку не получили) не суммируются, а считаются
+    в unknown; у xonsaroy кредитов нет вообще, его строки дают только минуты."""
     rows = load(out)
     total = {"credits": 0, "minutes": 0.0, "files": 0, "failed": 0, "unknown": 0,
              "saved_files": 0, "saved_minutes": 0.0}
@@ -53,7 +57,7 @@ def summary(out: Path) -> dict:
             total["files"] += 1; day["files"] += 1
             total["minutes"] += mins; day["minutes"] += mins
             if r.get("credits") is None:
-                total["unknown"] += 1
+                total["unknown"] += r.get("provider", "voicelab") == "voicelab"
             else:
                 total["credits"] += r["credits"]; day["credits"] += r["credits"]
         elif r["event"] == "failed":
@@ -69,7 +73,7 @@ def summary(out: Path) -> dict:
 
 
 def fmt(total: dict) -> str:
-    s = f'{total["credits"]} кредитов, {total["minutes"]:.1f} мин, файлов {total["files"]}'
+    s = f'{total["minutes"]:.1f} мин, файлов {total["files"]}, кредитов VoiceLab {total["credits"]}'
     if total["unknown"]:
         s += f' (у {total["unknown"]} кредиты неизвестны)'
     return s

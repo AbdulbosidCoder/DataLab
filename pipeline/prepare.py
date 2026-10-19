@@ -1,4 +1,8 @@
-"""MP4 -> wav 16 kHz mono -> VoiceLab STT (текст + спикеры) -> сегменты 1.5–15 с -> SQLite + файлы.
+"""MP4 -> wav 16 kHz mono -> STT -> сегменты 1.5–15 с -> SQLite + файлы.
+
+STT выбирается переменной STT_PROVIDER в .env (или флагом --provider):
+    xonsaroy (по умолчанию)  нарезка по паузам локально, каждый кусок распознаётся отдельно (pipeline/xonsaroy.py)
+    voicelab                 весь файл целиком, VoiceLab сам режет на реплики и делит спикеров
 
 Пример:
     python -m pipeline.prepare --videos data/videos --out data
@@ -6,7 +10,8 @@
 Что получается в --out:
     audio/<video>.wav                  полное аудио, 16 kHz mono 16-bit PCM
     segments/<video>/<video>_<start_ms>_<end_ms>.wav нарезанные реплики
-    transcripts/<video>.voicelab.json  сырой ответ VoiceLab (кэш, повторно не оплачивается)
+    transcripts/<video>.voicelab.json  сегменты от STT (кэш, повторно не отправляется; имя файла историческое,
+                                       поле provider говорит, какой сервис его сделал)
     transcripts/<video>.txt            расшифровка со спикерами и таймкодами
     transcripts/<video>.srt            субтитры
     manifest.jsonl                     все сегменты из БД (audio_filepath, text, speaker, ...)
@@ -15,10 +20,12 @@
 import argparse
 import array
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from pathlib import Path
 
@@ -26,12 +33,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import db  # noqa: E402
-from pipeline import usage, voicelab  # noqa: E402
+from pipeline import usage, voicelab, xonsaroy  # noqa: E402
 
 MEDIA_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4a", ".mp3", ".wav", ".ogg", ".flac"}
 SAMPLE_RATE = 16000
 PAD = 0.05          # запас по краям сегмента, с
 OVERLAP_MIN = 0.1   # пересечение с другим спикером, после которого сегмент считается наложением, с
+PROVIDERS = ("xonsaroy", "voicelab")
+STTError = (voicelab.VoiceLabError, xonsaroy.XonsaroyError)
+
+
+def stt_provider(args) -> str:
+    """--provider, иначе STT_PROVIDER из окружения/.env, иначе xonsaroy."""
+    p = (getattr(args, "provider", None) or os.environ.get("STT_PROVIDER") or "xonsaroy").strip().lower()
+    if p not in PROVIDERS:
+        raise xonsaroy.XonsaroyError(f"Неизвестный STT_PROVIDER={p}: допустимо {', '.join(PROVIDERS)}")
+    return p
 
 
 def safe_name(stem: str) -> str:
@@ -59,6 +76,8 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
     if cache.exists() and not args.force:
         print(f"  кэш: {cache.name}")
         return json.loads(cache.read_text(encoding="utf-8"))
+    if stt_provider(args) == "xonsaroy":
+        return get_xonsaroy(wav, cache, args)
     with tempfile.TemporaryDirectory() as tmp:
         f = upload_file(wav, args.upload_format, Path(tmp))
         print(f"  VoiceLab: отправка {f.name} ({f.stat().st_size / 1e6:.1f} MB) ...")
@@ -76,6 +95,27 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
     dur = (bill.get("duration_ms") or duration * 1000) / 1000
     usage.record(cache.parent.parent, wav.stem, "charged", dur, bill.get("credits"), f.name, bill.get("job_id"))
     print(f"  VoiceLab: {dur / 60:.1f} мин, кредитов ≈{bill.get('credits') if bill.get('credits') is not None else '?'}")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def get_xonsaroy(wav: Path, cache: Path, args) -> dict:
+    """Xonsaroy без кредитов: в журнал расхода пишется только длительность отправленного аудио."""
+    print("  Xonsaroy: поиск пауз и распознавание кусков ...")
+    last = [0.0]
+
+    def progress(done: int, total: int) -> None:
+        if time.time() - last[0] > 10 or done == total:
+            last[0] = time.time()
+            print(f"  Xonsaroy: {done}/{total} кусков")
+
+    result = xonsaroy.transcribe(wav, min_dur=args.min_dur, max_dur=args.max_dur,
+                                 state_file=cache.parent / f"{wav.stem}.xonsaroy.partial.json", progress=progress)
+    usage.record(cache.parent.parent, wav.stem, "charged", result["audio_seconds"], None, wav.name,
+                 provider="xonsaroy")
+    print(f"  Xonsaroy: отправлено {result['audio_seconds'] / 60:.1f} мин речи, "
+          f"распознано кусков {len(result['segments'])}")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -249,7 +289,7 @@ def process(src: Path, out: Path, conn, args) -> dict:
     with wave.open(str(wav), "rb") as r:
         total = r.getnframes() / r.getframerate()
 
-    # тот же звук уже расшифрован под другим именем: не тратим кредиты VoiceLab и не дублируем датасет
+    # тот же звук уже расшифрован под другим именем: не отправляем в STT повторно и не дублируем датасет
     fp, index = audio_fingerprint(wav), audio_index(out)
     owner = find_duplicate(out, video, fp, index)
     cache = out / "transcripts" / f"{video}.voicelab.json"
@@ -257,8 +297,8 @@ def process(src: Path, out: Path, conn, args) -> dict:
         if not args.allow_duplicates:
             if created:
                 wav.unlink(missing_ok=True)
-            print(f"  дубликат: тот же звук, что у {owner}; VoiceLab не вызывался")
-            usage.record(out, video, "duplicate", total, None, src.name)
+            print(f"  дубликат: тот же звук, что у {owner}; STT не вызывался")
+            usage.record(out, video, "duplicate", total, None, src.name, provider=stt_provider(args))
             return {"video": video, "duplicate_of": owner, "segments": 0, "hours": 0.0,
                     "short": 0, "long": 0, "overlap_dropped": 0}
         if not cache.exists():  # дубль разрешён: берём готовую расшифровку, а не платим ещё раз
@@ -288,7 +328,7 @@ def process(src: Path, out: Path, conn, args) -> dict:
         notes = None
         if dur > args.max_dur:
             stats["long"] += 1
-            notes = f"длиннее {args.max_dur} с: VoiceLab не вернул слова для разбиения"
+            notes = f"длиннее {args.max_dur} с: STT не вернул слова для разбиения"
         start, end = max(0.0, u["start"] - PAD), min(total, u["end"] + PAD)
         seg_path = out / "segments" / video / f"{video}_{int(start * 1000):08d}_{int(end * 1000):08d}.wav"
         cut_wav(wav, seg_path, start, end)
@@ -322,15 +362,17 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--videos", default="data/videos", help="папка с MP4 (или один файл)")
     ap.add_argument("--out", default="data", help="куда сохранять аудио, сегменты и расшифровки")
     ap.add_argument("--db", default=None, help="путь к SQLite (по умолчанию <out>/speech_lab.db)")
-    ap.add_argument("--env", default=str(ROOT / ".env"), help="файл с VOICELAB_API_KEY")
+    ap.add_argument("--env", default=str(ROOT / ".env"), help="файл с ключами (XONSAROY_API_KEY, VOICELAB_API_KEY)")
+    ap.add_argument("--provider", choices=PROVIDERS, default=None,
+                    help="сервис STT (по умолчанию STT_PROVIDER из .env, иначе xonsaroy)")
     ap.add_argument("--language", default="uz")
     ap.add_argument("--min-dur", type=float, default=1.5)
     ap.add_argument("--max-dur", type=float, default=15.0)
     ap.add_argument("--max-gap", type=float, default=0.5, help="макс. пауза при склейке реплик, с")
     ap.add_argument("--keep-overlap", action="store_true", help="сохранять наложения со статусом overlap")
-    ap.add_argument("--no-speakers", action="store_true", help="не просить VoiceLab разделять спикеров")
+    ap.add_argument("--no-speakers", action="store_true", help="не просить VoiceLab разделять спикеров (только voicelab)")
     ap.add_argument("--upload-format", choices=["wav", "flac", "mp3"], default="wav",
-                    help="в каком формате отправлять аудио в VoiceLab")
+                    help="в каком формате отправлять аудио в VoiceLab (только voicelab)")
     ap.add_argument("--force", action="store_true", help="заново конвертировать и транскрибировать")
     ap.add_argument("--allow-duplicates", action="store_true",
                     help="обрабатывать видео с уже расшифрованным звуком (расшифровка берётся из кэша)")
@@ -353,7 +395,7 @@ def main() -> None:
     for f in files:
         try:
             summary.append(process(f, out, conn, args))
-        except (voicelab.VoiceLabError, subprocess.CalledProcessError) as e:
+        except (*STTError, subprocess.CalledProcessError) as e:
             print(f"  ОШИБКА: {e}", file=sys.stderr)
     dups = [s for s in summary if s.get("duplicate_of")]
     for s in dups:
@@ -363,9 +405,9 @@ def main() -> None:
     print(f"\nГотово: видео {len(summary)}/{len(files)}, сегментов в этом запуске "
           f"{sum(s['segments'] for s in summary)} ({hours:.2f} ч), всего в manifest.jsonl: {n}")
     run = usage.load(out)[seen:]
-    spent = sum(r["credits"] or 0 for r in run if r["event"] == "charged")
-    print(f"VoiceLab в этом запуске: {spent} кредитов, {sum(r['event'] == 'charged' for r in run)} файлов; "
-          f"всего: {usage.fmt(usage.summary(out)['total'])}")
+    sent = [r for r in run if r["event"] == "charged"]
+    print(f"STT в этом запуске: файлов {len(sent)}, {sum(r['duration_s'] for r in sent) / 60:.1f} мин аудио, "
+          f"кредитов VoiceLab {sum(r['credits'] or 0 for r in sent)}; всего: {usage.fmt(usage.summary(out)['total'])}")
 
 
 if __name__ == "__main__":

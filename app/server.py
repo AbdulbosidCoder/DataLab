@@ -1,4 +1,4 @@
-"""Веб-интерфейс: загрузка видео/аудио -> VoiceLab -> проверка и правка сегментов.
+"""Веб-интерфейс: загрузка видео/аудио -> STT (Xonsaroy или VoiceLab) -> проверка и правка сегментов.
 
 Запуск:  uvicorn app.server:app --host 0.0.0.0 --port 8000
 """
@@ -67,12 +67,12 @@ def _worker() -> None:
         c = db.connect(DB_PATH)
         try:
             job = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-            _set_job(job_id, status="processing", message="Конвертация и отправка в VoiceLab")
+            _set_job(job_id, status="processing", message="Конвертация и распознавание (STT)")
             res = prepare.process(UPLOADS / job["filename"], DATA, c, args)
             if res.get("duplicate_of"):  # другой файл, но звук тот же, что у уже расшифрованного видео
                 (UPLOADS / job["filename"]).unlink(missing_ok=True)
                 _set_job(job_id, status="duplicate", video=res["duplicate_of"], segments=0,
-                         message=f"Тот же звук, что у {res['duplicate_of']}: VoiceLab не вызывался")
+                         message=f"Тот же звук, что у {res['duplicate_of']}: STT не вызывался")
                 continue
             prepare.write_manifest(c, DATA)
             _set_job(job_id, status="done", video=res["video"], segments=res["segments"],
@@ -112,11 +112,12 @@ async def upload(file: UploadFile = File(...)):
         while chunk := await file.read(1 << 20):
             f.write(chunk); h.update(chunk)
     with conn() as c:
-        # тот же файл уже загружали: не ставим в очередь, кредиты VoiceLab не тратятся
+        # тот же файл уже загружали: не ставим в очередь, STT не вызывается
         dup = c.execute("SELECT filename, video FROM jobs WHERE sha256 = ? AND status != 'error' ORDER BY id LIMIT 1",
                         (h.hexdigest(),)).fetchone()
-        # тот же файл уже падал с ошибкой: повторяем ту задачу. Имя видео то же, поэтому VoiceLab
-        # продолжит уже созданную расшифровку (Idempotency-Key из transcripts/*.pending.json), а не спишет заново
+        # тот же файл уже падал с ошибкой: повторяем ту задачу. Имя видео то же, поэтому STT продолжит с места сбоя:
+        # VoiceLab ту же расшифровку (Idempotency-Key из transcripts/*.pending.json), Xonsaroy с первого
+        # нераспознанного куска (transcripts/*.xonsaroy.partial.json)
         failed = c.execute("SELECT id, filename FROM jobs WHERE sha256 = ? AND status = 'error' ORDER BY id DESC LIMIT 1",
                            (h.hexdigest(),)).fetchone()
         if not dup and failed and (UPLOADS / failed["filename"]).exists():
@@ -141,7 +142,7 @@ def _requeue(c: sqlite3.Connection, job_id: int) -> None:
 
 @app.post("/api/jobs/{job_id}/retry")
 def retry_job(job_id: int):
-    """Повторить упавшую задачу с тем же файлом: уже оплаченная расшифровка VoiceLab не оплачивается снова."""
+    """Повторить упавшую задачу с тем же файлом: уже распознанное (и оплаченное в VoiceLab) заново не отправляется."""
     with conn() as c:
         job = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if not job:
