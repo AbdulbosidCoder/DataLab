@@ -174,11 +174,13 @@ def _cut(src: Path, dst: Path, start: float, end: float) -> None:
 
 def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
                state_file: str | Path | None = None, concurrency: int | None = None,
-               progress=None) -> dict:
+               progress=None, billing: dict | None = None) -> dict:
     """Режет wav по паузам и распознаёт каждый кусок (не больше concurrency запросов одновременно).
 
     Возвращает {provider, transcript, duration_ms, audio_seconds, segments[{start_ms, end_ms, text, speaker}]}.
     Куски, где ничего не распознано (пустой text), в segments не попадают.
+    billing (если передан) по ходу работы заполняется: requests и audio_seconds (по ответам API, как их
+    считает дашборд Xonsaroy) только за этот запуск, без кусков, распознанных в прошлых запусках.
     """
     wav = Path(wav)
     energy, _ = _energies(wav)
@@ -199,13 +201,16 @@ def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
             res = post_file(part)
             part.unlink(missing_ok=True)
             with lock:
+                if billing is not None:
+                    billing["requests"] = billing.get("requests", 0) + 1
+                    billing["audio_seconds"] = billing.get("audio_seconds", 0.0) + (res.get("audio_seconds") or c[1] - c[0])
                 state["done"][f"{c[0]}-{c[1]}"] = {"text": (res.get("text") or "").strip(),
                                                    "audio_seconds": res.get("audio_seconds")}
                 if state_path:
                     state_path.parent.mkdir(parents=True, exist_ok=True)
                     state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
                 if progress:
-                    progress(len(state["done"]), len(chunks))
+                    progress(len(state["done"]), len(chunks), billing)
 
         pool = ThreadPoolExecutor(max_workers=workers)
         try:

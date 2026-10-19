@@ -64,6 +64,7 @@ def _worker() -> None:
     args = prepare.build_parser().parse_args(["--out", str(DATA), "--keep-overlap"])
     while True:
         job_id = _jobs.get()
+        args.on_progress = lambda msg, job_id=job_id: _set_job(job_id, message=msg)
         c = db.connect(DB_PATH)
         try:
             job = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
