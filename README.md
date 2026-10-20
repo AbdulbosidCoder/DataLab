@@ -7,13 +7,16 @@ MP4 → wav 16 kHz mono → транскрипция **Xonsaroy STT** (или Vo
 
 `STT_PROVIDER` в `.env` (или флаг `--provider`):
 
-- **`xonsaroy`** (по умолчанию). API отдаёт только сплошной текст, без таймкодов и спикеров. Поэтому паузы ищутся
-  локально по громкости, аудио режется на куски 1.5–15 с, и каждый кусок распознаётся отдельно. Пауза длиннее 1.5 с
+- **`xonsaroy`** (по умолчанию). API отдаёт только сплошной текст, без таймкодов и спикеров. Поэтому людей локально
+  делит **pyannote/speaker-diarization-3.1** (см. «Диаризация спикеров» ниже), реплика каждого спикера режется на куски
+  1.5–15 с по паузам, и каждый кусок распознаётся отдельно с меткой своего спикера. Куски разных спикеров, которые
+  пересекаются по времени, получают статус `overlap`. Без pyannote (не установлен, нет `HF_TOKEN`) или с
+  `--no-diarization` всё видео режется только по паузам. Пауза длиннее 1.5 с
   всегда граница куска; если без разреза кусок длиннее 15 с, он режется в самой длинной паузе внутри, чтобы фраза
   не делилась пополам
   (`POST /api/v1/transcriptions`, не больше 2 запросов одновременно, повтор только на 429/502/503 и обрыв связи).
-  Таймкод сегмента = границы куска. Все сегменты видео получают `SPEAKER_00`: разных людей разводит редактор в
-  студии (переназначение спикера, Alt+1..9). Если упало посередине, «↻ Повторить» продолжит с первого
+  Таймкод сегмента = границы куска. Без диаризации все сегменты видео получают `SPEAKER_00`, и разных людей разводит
+  редактор в студии (переназначение спикера, Alt+1..9). Если упало посередине, «↻ Повторить» продолжит с первого
   нераспознанного куска (`transcripts/<video>.xonsaroy.partial.json`). Ключ: `XONSAROY_API_KEY=xs_stt_...`.
 - **`voicelab`**. Весь файл целиком, VoiceLab сам режет на реплики и делит спикеров, тратит кредиты.
   Ключ: `VOICELAB_API_KEY=vlk_...`.
@@ -31,6 +34,29 @@ cp .env.example .env      # Windows: copy .env.example .env
 # в .env впишите XONSAROY_API_KEY=xs_stt_... (или STT_PROVIDER=voicelab и VOICELAB_API_KEY)
 ```
 
+### Диаризация спикеров (pyannote, локально)
+
+pyannote работает на вашем компьютере, в Xonsaroy уходит только текст каждой реплики. Видеокарта NVIDIA ускоряет
+в разы (GTX 1650 4 GB хватает), без неё работает на процессоре.
+
+```bash
+# torch с CUDA (GTX 1650 подходит, нужен драйвер NVIDIA 528+); без видеокарты: --index-url https://download.pytorch.org/whl/cpu
+pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+pip install -r requirements-diarization.txt
+python -c "import torch; print(torch.cuda.is_available())"   # True = будет cuda
+```
+
+1. Токен Hugging Face (Read): https://hf.co/settings/tokens, впишите в `.env`: `HF_TOKEN=hf_...`.
+2. Тем же аккаунтом примите условия на https://hf.co/pyannote/speaker-diarization-3.1 и
+   https://hf.co/pyannote/segmentation-3.0. Модель скачивается один раз при первом запуске.
+3. Устройство выбирается само (`cuda`, если есть, иначе `cpu`); вручную: `--device cpu` или `DIARIZATION_DEVICE=cpu`
+   в `.env`. Если памяти видеокарты не хватило, видео повторяется на cpu.
+
+Реплики спикеров кэшируются в `transcripts/<video>.diarization.json`. Если pyannote не загрузился, в логе будет
+«ВНИМАНИЕ: диаризация недоступна» с причиной, а видео распознается одним спикером; когда pyannote заработает,
+перезапустите его с `--force` (или удалите `transcripts/<video>.voicelab.json`). Docker-образ pyannote не содержит:
+диаризация работает при запуске без Docker.
+
 ## Запуск без Docker
 
 ```bash
@@ -38,7 +64,8 @@ uvicorn app.server:app --port 8000   # веб-интерфейс
 python -m pipeline.prepare           # или пакетно: видео из data/videos/
 ```
 
-Флаги: `--provider xonsaroy|voicelab`, `--videos`, `--out`, `--language uz`, `--min-dur 1.5`, `--max-dur 15`, `--max-gap 0.5`,
+Флаги: `--provider xonsaroy|voicelab`, `--no-diarization`, `--device auto|cuda|cpu`, `--num-speakers N` (если число
+людей в видео известно), `--videos`, `--out`, `--language uz`, `--min-dur 1.5`, `--max-dur 15`, `--max-gap 0.5`,
 `--keep-overlap` (оставить наложения со статусом `overlap`), `--no-speakers` (только voicelab),
 `--upload-format wav|flac|mp3` (только voicelab; если большой файл не принимается, попробуйте `mp3`), `--force`, `--allow-duplicates`.
 
@@ -149,6 +176,7 @@ docker compose run --rm prepare   # флаги передаются как ес�
 | `segments/<video>/<video>_<start_ms>_<end_ms>.wav` | реплики одного спикера 1.5–15 с |
 | `transcripts/<video>.txt` / `.srt` | полная расшифровка со спикерами и таймкодами |
 | `transcripts/<video>.voicelab.json` | сегменты от STT (Xonsaroy или VoiceLab) |
+| `transcripts/<video>.diarization.json` | реплики спикеров от pyannote (только Xonsaroy) |
 | `manifest.jsonl` | все сегменты: `audio_filepath`, `duration`, `text`, `speaker`, `video`, `status` |
 | `speech_lab.db` | SQLite, таблица `segments` (схема speech-lab) |
 | `usage.jsonl` | журнал расхода STT: отправки, минуты, кредиты VoiceLab, пропущенные дубли |
