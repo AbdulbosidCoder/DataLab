@@ -54,8 +54,8 @@ python -c "import torch; print(torch.cuda.is_available())"   # True = будет
 
 Реплики спикеров кэшируются в `transcripts/<video>.diarization.json`. Если pyannote не загрузился, в логе будет
 «ВНИМАНИЕ: диаризация недоступна» с причиной, а видео распознается одним спикером; когда pyannote заработает,
-перезапустите его с `--force` (или удалите `transcripts/<video>.voicelab.json`). Docker-образ pyannote не содержит:
-диаризация работает при запуске без Docker.
+перезапустите его с `--force` (или удалите `transcripts/<video>.voicelab.json`). В Docker всё это уже внутри образа,
+см. «Диаризация в Docker» ниже.
 
 ## Запуск без Docker
 
@@ -83,12 +83,26 @@ python -m pipeline.prepare           # или пакетно: видео из da
 
 ## Веб-интерфейс (Docker)
 
-Нужен только Docker (Python и ffmpeg уже внутри образа).
+Нужен только Docker (Python, ffmpeg, torch и pyannote уже внутри образа).
 
 ```bash
 cp .env.example .env              # Windows: copy .env.example .env, впишите ключ
 docker compose up -d --build      # открыть http://localhost:8000
 ```
+
+### Диаризация в Docker (pyannote на видеокарте)
+
+Образ собирается с torch 2.6 (CUDA 12.4) и pyannote: первая сборка долгая, образ занимает около 10 ГБ на диске. В `.env` нужен
+`HF_TOKEN=hf_...` (и принятые условия моделей, см. «Диаризация спикеров»). Модель скачивается при первом видео и
+хранится в `data/.cache/huggingface`.
+
+Видеокарту контейнеру даёт `docker-compose.override.yml` (compose подхватывает его сам). На Windows нужны свежий
+драйвер NVIDIA и Docker Desktop на WSL2. Проверка: `docker compose exec web python -c "import torch; print(torch.cuda.is_available())"`
+должно напечатать `True`, а в логе задачи будет `pyannote: ... на cuda`.
+
+- Docker пишет `could not select device driver "nvidia"`: видеокарта контейнеру недоступна. Удалите или переименуйте
+  `docker-compose.override.yml`, pyannote будет работать на cpu (медленнее).
+- Образ без pyannote (меньше, нарезка только по паузам): `DIARIZATION=0 docker compose up -d --build`.
 
 ### Доступ из интернета (Cloudflare Tunnel)
 
