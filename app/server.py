@@ -2,10 +2,12 @@
 
 Запуск:  uvicorn app.server:app --host 0.0.0.0 --port 8000
 """
+import base64
 import hashlib
 import json
 import os
 import queue
+import secrets
 import shutil
 import sqlite3
 import threading
@@ -15,7 +17,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -36,6 +38,37 @@ DATA.mkdir(parents=True, exist_ok=True)
 UPLOADS.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Speech Lab")
+
+
+# ---------- доступ по паролю (для публикации через Cloudflare Tunnel) ----------
+
+STUDIO_USER = os.environ.get("STUDIO_USER", "admin")
+STUDIO_PASSWORD = os.environ.get("STUDIO_PASSWORD", "")
+
+
+def _auth_ok(header: str) -> bool:
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        user, _, password = base64.b64decode(token).decode().partition(":")
+    except ValueError:
+        return False
+    return secrets.compare_digest(user.encode(), STUDIO_USER.encode()) and \
+        secrets.compare_digest(password.encode(), STUDIO_PASSWORD.encode())
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    if not STUDIO_PASSWORD:
+        # без пароля студия открыта только локально: запрос, пришедший через туннель Cloudflare, не пускаем
+        if "cf-connecting-ip" in request.headers:
+            return PlainTextResponse("Задайте STUDIO_PASSWORD в .env, чтобы открыть студию через интернет", 403)
+        return await call_next(request)
+    if not _auth_ok(request.headers.get("authorization", "")):
+        return Response("Нужен логин и пароль", 401, {"WWW-Authenticate": 'Basic realm="Speech Lab", charset="UTF-8"'},
+                        media_type="text/plain; charset=utf-8")
+    return await call_next(request)
 
 
 @contextmanager

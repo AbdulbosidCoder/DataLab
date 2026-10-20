@@ -63,6 +63,33 @@ cp .env.example .env              # Windows: copy .env.example .env, впиши�
 docker compose up -d --build      # открыть http://localhost:8000
 ```
 
+### Доступ из интернета (Cloudflare Tunnel)
+
+Туннель открывает студию по адресу `https://...` без белого IP и проброса портов. Сначала задайте пароль в `.env`:
+
+```
+STUDIO_USER=admin
+STUDIO_PASSWORD=придумайте-длинный-пароль
+```
+
+Без `STUDIO_PASSWORD` студия работает только на этом компьютере: запросы через туннель получают 403.
+С паролем браузер спрашивает логин и пароль и на `localhost`.
+
+**Постоянный адрес на своём домене** (домен должен быть в Cloudflare):
+
+1. [one.dash.cloudflare.com](https://one.dash.cloudflare.com) → Networks → Tunnels → Create a tunnel → Cloudflared, имя `speech-lab`.
+2. На шаге установки скопируйте токен (длинная строка после `--token`) и впишите в `.env`: `CLOUDFLARE_TUNNEL_TOKEN=eyJ...`.
+   Токен храните только в `.env`, в чат и в git его не вставляйте.
+3. Public Hostname: например `lab.ваш-домен.uz`, Service `HTTP`, URL `web:8000`.
+4. Запуск: `docker compose --profile tunnel up -d --build`, проверка: `docker compose logs tunnel` (строки `Registered tunnel connection`).
+
+**Временный адрес без домена:** `docker compose --profile quick up -d --build`, затем `docker compose logs quicktunnel`
+покажет адрес `https://<слова>.trycloudflare.com`. Он меняется при каждом перезапуске контейнера.
+
+Остановить туннель: `docker compose --profile tunnel down` (или `--profile quick`).
+Cloudflare на бесплатном тарифе принимает загрузку файла не больше 100 МБ: большие видео загружайте через `localhost`
+или положите в `data/videos` и запустите `docker compose run --rm prepare`.
+
 Студия устроена как монтажка (DaVinci Resolve):
 
 - **Медиа** (слева): перетащите видео или аудио. Файл встаёт в очередь, VoiceLab его расшифровывает, видео появляется в списке.

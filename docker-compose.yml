@@ -9,6 +9,22 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
+  tunnel:                   # постоянный адрес через Cloudflare Tunnel: docker compose --profile tunnel up -d
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}   # из .env
+    depends_on: [web]
+    restart: unless-stopped
+
+  quicktunnel:              # временный адрес *.trycloudflare.com без домена: docker compose --profile quick up -d
+    image: cloudflare/cloudflared:latest
+    profiles: ["quick"]
+    command: tunnel --no-autoupdate --url http://web:8000
+    depends_on: [web]
+    restart: unless-stopped
+
   prepare:                  # пакетная обработка data/videos без браузера
     build: .
     image: datalab
