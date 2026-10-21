@@ -110,8 +110,13 @@ def _worker() -> None:
                          message=f"Тот же звук, что у {res['duplicate_of']}: STT не вызывался")
                 continue
             prepare.write_manifest(c, DATA)
-            _set_job(job_id, status="done", video=res["video"], segments=res["segments"],
-                     message=f"Сегментов: {res['segments']}, коротких отброшено: {res['short']}")
+            msg = f"Сегментов: {res['segments']}, спикеров: {res.get('speakers', 0)}, коротких отброшено: {res['short']}"
+            # речь не разделена по людям: начинаем с «⚠», и задача остаётся на виду в студии
+            if res.get("diarization_error"):
+                msg = f"⚠ Диаризация не сработала, все реплики одного спикера: {res['diarization_error']}. {msg}"
+            elif res.get("diarization") == "vad" and not args.no_diarization:
+                msg = f"⚠ Расшифровка из кэша без диаризации: все реплики одного спикера. {msg}"
+            _set_job(job_id, status="done", video=res["video"], segments=res["segments"], message=msg)
         except Exception as e:  # ошибку показываем в интерфейсе, очередь продолжает работать
             traceback.print_exc()
             _set_job(job_id, status="error", message=str(e)[:500])
@@ -239,6 +244,32 @@ def retry_job(job_id: int):
             raise HTTPException(409, "Повторить можно только задачу с ошибкой")
         if not (UPLOADS / job["filename"]).exists():
             raise HTTPException(409, "Файл задачи уже удалён: загрузите видео заново")
+        _requeue(c, job_id)
+    return {"id": job_id, "status": "queued"}
+
+
+@app.post("/api/jobs/{job_id}/rediarize")
+def rediarize_job(job_id: int):
+    """Заново разделить готовое видео по спикерам (после того как pyannote заработал): сегменты видео и кэш расшифровки
+    удаляются, задача ставится в очередь. Если в видео уже есть правки разметчиков, ничего не трогаем."""
+    with conn() as c:
+        job = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(404, "Задача не найдена")
+        if job["status"] != "done" or not job["video"]:
+            raise HTTPException(409, "Повторить диаризацию можно только у готового видео")
+        if not (UPLOADS / job["filename"]).exists():
+            raise HTTPException(409, "Исходный файл уже удалён: загрузите видео заново")
+        video = job["video"]
+        edited = c.execute("SELECT COUNT(*) FROM segments WHERE video = ? AND (status != 'pending' OR text != auto_text "
+                           "OR annotator IS NOT NULL)", (video,)).fetchone()[0]
+        if edited:
+            raise HTTPException(409, f"В видео {video} уже есть правки ({edited} сегм.): повторная диаризация их сотрёт")
+        c.execute("DELETE FROM segments WHERE video = ?", (video,))
+        c.execute("DELETE FROM speakers WHERE video = ?", (video,))
+        for name in (f"{video}.voicelab.json", f"{video}.diarization.json"):
+            (DATA / "transcripts" / name).unlink(missing_ok=True)
+        shutil.rmtree(DATA / "segments" / video, ignore_errors=True)
         _requeue(c, job_id)
     return {"id": job_id, "status": "queued"}
 

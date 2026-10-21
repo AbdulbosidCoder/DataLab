@@ -119,6 +119,7 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
 def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
     """Реплики спикеров от pyannote (кэш transcripts/<video>.diarization.json) или None, если диаризация выключена
     или недоступна: тогда Xonsaroy режет по паузам, и всё видео получает одного спикера."""
+    args.diarization_error = None
     if getattr(args, "no_diarization", False):
         return None
     path = cache.parent / f"{wav.stem}.diarization.json"
@@ -141,6 +142,7 @@ def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
     except Exception as e:  # noqa: BLE001 - без диаризации видео всё равно распознаётся, просто одним спикером
         print(f"  ВНИМАНИЕ: диаризация недоступна ({e}); режу по паузам, все реплики получат SPEAKER_00. "
               f"Когда pyannote заработает, перезапустите видео с --force", file=sys.stderr)
+        args.diarization_error = str(e)[:300]  # веб-сервер покажет причину в задаче
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"model": diarize.MODEL, "turns": turns}, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -176,6 +178,8 @@ def get_xonsaroy(wav: Path, cache: Path, args) -> dict:
         record("partial")
         raise
     record("charged")
+    if getattr(args, "diarization_error", None):
+        result["diarization_error"] = args.diarization_error
     print(f"  Xonsaroy: отправлено {bill.get('audio_seconds', 0) / 60:.1f} мин, запросов {bill.get('requests', 0)}, "
           f"распознано кусков {len(result['segments'])}")
     cache.parent.mkdir(parents=True, exist_ok=True)
@@ -403,7 +407,9 @@ def process(src: Path, out: Path, conn, args) -> dict:
     added = db.insert_segments(conn, rows)
     print(f"  сегментов: {len(rows)} (новых в БД: {added}), "
           f"отброшено коротких: {stats['short']}, наложений: {stats['overlap_dropped']}")
-    return {"video": video, "segments": len(rows), "hours": sum(r["duration"] for r in rows) / 3600, **stats}
+    return {"video": video, "segments": len(rows), "hours": sum(r["duration"] for r in rows) / 3600,
+            "speakers": len({r["speaker"] for r in rows}), "diarization": result.get("diarization"),
+            "diarization_error": result.get("diarization_error"), **stats}
 
 
 def write_manifest(conn, out: Path) -> int:
