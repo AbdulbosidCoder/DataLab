@@ -369,12 +369,19 @@ async function refreshJobs() {
   const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка", duplicate: "дубликат" };
   const hidden = JSON.parse(store.get("hiddenJobs") || "[]");
   // готовое видео без сегментов в список видео не попадает, поэтому его задачу оставляем на виду
-  const empty = (j) => j.status === "done" && !j.segments;
+  const empty = (j) => j.status === "done" && (!j.segments || (j.message || "").startsWith("⚠"));
   const shown = jobs.filter((j) => (j.status !== "done" || empty(j)) && !hidden.includes(j.id)).slice(0, 8);
   $("jobs").innerHTML = shown.map((j) => `<div class="job"><div class="jrow"><span class="jname" title="${esc(j.filename)}">${esc(j.filename)}</span>
+    ${empty(j) && j.segments ? `<button class="jx" data-rediarize="${j.id}" title="Удалить сегменты видео и заново разделить речь по спикерам (pyannote)">↻ Диаризация</button>` : ""}
     ${j.status === "error" ? `<button class="jx" data-retry="${j.id}" title="Повторить. Уже распознанное заново не отправится">↻ Повторить</button>` : ""}
     ${j.status === "error" || j.status === "duplicate" || empty(j) ? `<button class="jx" data-job="${j.id}" title="Скрыть">✕</button>` : ""}</div>
-    <span class="st-${empty(j) ? "error" : j.status}">${empty(j) ? "готово, но сегментов нет" : st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
+    <span class="st-${empty(j) ? "error" : j.status}">${empty(j) ? (j.segments ? "готово, проверьте" : "готово, но сегментов нет") : st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
+  document.querySelectorAll("[data-rediarize]").forEach((b) => b.onclick = async () => {
+    if (!confirm("Сегменты этого видео будут удалены и созданы заново с разделением по спикерам. Продолжить?")) return;
+    b.disabled = true;
+    try { await api(`/api/jobs/${b.dataset.rediarize}/rediarize`, { method: "POST" }); } catch (e) { alert(e.message); }
+    refreshJobs(); refreshStats();
+  });
   document.querySelectorAll("[data-retry]").forEach((b) => b.onclick = async () => {
     b.disabled = true;
     try { await api(`/api/jobs/${b.dataset.retry}/retry`, { method: "POST" }); } catch (e) { alert(e.message); }
