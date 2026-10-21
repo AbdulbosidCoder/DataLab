@@ -88,39 +88,12 @@ def upload_file(wav: Path, fmt: str, tmpdir: Path) -> Path:
     return out
 
 
-def no_gpu_mode(args) -> str | None:
-    """Что делать без видеокарты (DIARIZATION_NO_GPU в .env): voicelab (по умолчанию) - всё видео в VoiceLab,
-    он сам делит текст по спикерам; cpu - pyannote на процессоре (в 5-10 раз медленнее); off - по паузам,
-    один спикер. None: видеокарта есть, устройство задано вручную или диаризация выключена."""
-    if getattr(args, "no_diarization", False) or getattr(args, "device", None) or os.environ.get("DIARIZATION_DEVICE", "auto").strip().lower() != "auto":
-        return None
-    if diarize.has_cuda():
-        return None
-    mode = (os.environ.get("DIARIZATION_NO_GPU") or "voicelab").strip().lower()
-    return mode if mode in ("voicelab", "off") else None  # cpu: как раньше, pyannote выберет cpu сам
-
-
 def get_transcription(wav: Path, cache: Path, args) -> dict:
     if cache.exists() and not args.force:
         print(f"  кэш: {cache.name}")
         return json.loads(cache.read_text(encoding="utf-8"))
-    args.no_gpu_reason = None
     if stt_provider(args) == "xonsaroy":
-        mode = no_gpu_mode(args)
-        if mode == "voicelab":
-            print("  видеокарты нет: VoiceLab распознаёт видео и сам делит его по спикерам")
-            try:
-                return get_voicelab(wav, cache, args)
-            except voicelab.VoiceLabError as e:  # нет ключа или кредитов: Xonsaroy по паузам, один спикер
-                print(f"  VoiceLab недоступен ({e}): Xonsaroy по паузам", file=sys.stderr)
-                args.no_gpu_reason = f"видеокарты нет, VoiceLab недоступен ({str(e)[:200]})"
-        elif mode == "off":
-            args.no_gpu_reason = "видеокарты нет (DIARIZATION_NO_GPU=off)"
         return get_xonsaroy(wav, cache, args)
-    return get_voicelab(wav, cache, args)
-
-
-def get_voicelab(wav: Path, cache: Path, args) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         f = upload_file(wav, args.upload_format, Path(tmp))
         print(f"  VoiceLab: отправка {f.name} ({f.stat().st_size / 1e6:.1f} MB) ...")
@@ -148,9 +121,6 @@ def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
     или недоступна: тогда Xonsaroy режет по паузам, и всё видео получает одного спикера."""
     args.diarization_error = None
     if getattr(args, "no_diarization", False):
-        return None
-    if getattr(args, "no_gpu_reason", None):  # без видеокарты pyannote не запускаем (см. no_gpu_mode)
-        args.diarization_error = args.no_gpu_reason
         return None
     path = cache.parent / f"{wav.stem}.diarization.json"
     if path.exists() and not args.force:
