@@ -126,10 +126,15 @@ def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
     if path.exists() and not args.force:
         return json.loads(path.read_text(encoding="utf-8"))["turns"]
     on_progress = getattr(args, "on_progress", None)
-    if on_progress:
-        on_progress("Диаризация (pyannote): кто и когда говорит ...")
-    print("  pyannote: диаризация ...")
     device = getattr(args, "device", None)
+    try:  # видеокарта есть: pyannote на ней; нет: на процессоре, в 5-10 раз медленнее
+        where = diarize.pick_device(device)
+    except ImportError:  # pyannote не установлен: diarize() ниже объяснит причину
+        where = "?"
+    where = {"cuda": "на видеокарте", "cpu": "на процессоре, медленнее"}.get(where, where)
+    if on_progress:
+        on_progress(f"Диаризация (pyannote, {where}): кто и когда говорит ...")
+    print(f"  pyannote: диаризация ({where}) ...")
     try:
         try:
             turns = diarize.diarize(wav, device=device, num_speakers=getattr(args, "num_speakers", None))
