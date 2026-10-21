@@ -25,6 +25,15 @@ def hf_token() -> str:
     return (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or "").strip()
 
 
+def has_cuda() -> bool:
+    """Есть ли видеокарта, которую видит torch. Без torch (образ DIARIZATION=0) считаем, что нет."""
+    try:
+        import torch
+    except ImportError:
+        return False
+    return torch.cuda.is_available()
+
+
 def pick_device(device: str | None = None) -> str:
     """auto (по умолчанию): cuda, если доступна, иначе cpu. DIARIZATION_DEVICE в .env или --device."""
     import torch
