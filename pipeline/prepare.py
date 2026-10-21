@@ -129,9 +129,9 @@ def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
     device = getattr(args, "device", None)
     try:  # видеокарта есть: pyannote на ней; нет: на процессоре, в 5-10 раз медленнее
         where = diarize.pick_device(device)
-    except ImportError:  # pyannote не установлен: diarize() ниже объяснит причину
+    except Exception:  # noqa: BLE001 - torch не ставится или сломан: причину объяснит diarize() ниже
         where = "?"
-    where = {"cuda": "на видеокарте", "cpu": "на процессоре, медленнее"}.get(where, where)
+    where = "на видеокарте" if where.startswith("cuda") else "на процессоре, медленнее" if where == "cpu" else where
     if on_progress:
         on_progress(f"Диаризация (pyannote, {where}): кто и когда говорит ...")
     print(f"  pyannote: диаризация ({where}) ...")
@@ -142,6 +142,8 @@ def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
             if "out of memory" not in str(e).lower() or device == "cpu":
                 raise
             print("  pyannote: не хватило памяти видеокарты, повтор на cpu")
+            if on_progress:
+                on_progress("Диаризация (pyannote, на процессоре: не хватило памяти видеокарты, медленнее) ...")
             diarize.torch_empty_cache()
             turns = diarize.diarize(wav, device="cpu", num_speakers=getattr(args, "num_speakers", None))
     except Exception as e:  # noqa: BLE001 - без диаризации видео всё равно распознаётся, просто одним спикером
