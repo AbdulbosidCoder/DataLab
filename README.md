@@ -128,8 +128,29 @@ STUDIO_PASSWORD=придумайте-длинный-пароль
 покажет адрес `https://<слова>.trycloudflare.com`. Он меняется при каждом перезапуске контейнера.
 
 Остановить туннель: `docker compose --profile tunnel down` (или `--profile quick`).
-Cloudflare на бесплатном тарифе принимает загрузку файла не больше 100 МБ: большие видео загружайте через `localhost`
-или положите в `data/videos` и запустите `docker compose run --rm prepare`.
+Cloudflare на бесплатном тарифе пропускает запрос не больше 100 МБ, поэтому студия загружает видео частями по 32 МБ:
+файлы по 1 ГБ и больше проходят и через туннель, а после обрыва связи загрузка продолжается с того же места.
+
+### Доступ через Tailscale (частная сеть, без лимитов)
+
+Tailscale связывает сервер и компьютеры разметчиков в одну частную сеть. Студия не открывается в интернет,
+лимита на размер файла нет, трафик зашифрован.
+
+1. Зарегистрируйтесь на [login.tailscale.com](https://login.tailscale.com) и поставьте Tailscale на свой компьютер
+   и компьютеры разметчиков ([tailscale.com/download](https://tailscale.com/download)), войдите в ту же сеть
+   (разметчиков можно пригласить: Admin console → Users → Invite).
+2. Admin console → Settings → Keys → Generate auth key. Впишите ключ в `.env`: `TS_AUTHKEY=tskey-auth-...`.
+   Ключ нужен только при первом входе, дальше вход хранится в `data/.tailscale`.
+3. Запуск на сервере: `docker compose --profile tailscale up -d --build`,
+   проверка: `docker compose logs tailscale` (строка `Startup complete`).
+4. Студия открывается по адресу `http://speech-lab` (если в сети включён MagicDNS, он включён по умолчанию)
+   или по IP `100.x.x.x` из Admin console → Machines.
+
+Пароль `STUDIO_PASSWORD` для Tailscale не обязателен: в сеть попадают только приглашённые. Можно включить туннель
+и Tailscale одновременно: `docker compose --profile tunnel --profile tailscale up -d`.
+
+Вместо контейнера Tailscale можно поставить прямо на Ubuntu: `curl -fsSL https://tailscale.com/install.sh | sh`,
+`sudo tailscale up`, и студия будет доступна по `http://<имя-сервера>:8000`.
 
 Студия устроена как монтажка (DaVinci Resolve):
 

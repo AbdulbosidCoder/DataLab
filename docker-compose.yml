@@ -28,6 +28,20 @@ services:
     depends_on: [web]
     restart: unless-stopped
 
+  tailscale:                # частная сеть Tailscale без лимита на размер файла: docker compose --profile tailscale up -d
+    image: tailscale/tailscale:latest
+    profiles: ["tailscale"]
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}       # из .env, нужен только при первом входе
+      TS_HOSTNAME: speech-lab           # адрес в сети: http://speech-lab
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - ./data/.tailscale:/var/lib/tailscale   # вход в сеть сохраняется между перезапусками
+      - ./tailscale:/config:ro
+    depends_on: [web]
+    restart: unless-stopped
+
   prepare:                  # пакетная обработка data/videos без браузера
     build:
       context: .
