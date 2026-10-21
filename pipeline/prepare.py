@@ -126,10 +126,15 @@ def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
     if path.exists() and not args.force:
         return json.loads(path.read_text(encoding="utf-8"))["turns"]
     on_progress = getattr(args, "on_progress", None)
-    if on_progress:
-        on_progress("Диаризация (pyannote): кто и когда говорит ...")
-    print("  pyannote: диаризация ...")
     device = getattr(args, "device", None)
+    try:  # видеокарта есть: pyannote на ней; нет: на процессоре, в 5-10 раз медленнее
+        where = diarize.pick_device(device)
+    except Exception:  # noqa: BLE001 - torch не ставится или сломан: причину объяснит diarize() ниже
+        where = "?"
+    where = "на видеокарте" if where.startswith("cuda") else "на процессоре, медленнее" if where == "cpu" else where
+    if on_progress:
+        on_progress(f"Диаризация (pyannote, {where}): кто и когда говорит ...")
+    print(f"  pyannote: диаризация ({where}) ...")
     try:
         try:
             turns = diarize.diarize(wav, device=device, num_speakers=getattr(args, "num_speakers", None))
@@ -137,6 +142,8 @@ def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
             if "out of memory" not in str(e).lower() or device == "cpu":
                 raise
             print("  pyannote: не хватило памяти видеокарты, повтор на cpu")
+            if on_progress:
+                on_progress("Диаризация (pyannote, на процессоре: не хватило памяти видеокарты, медленнее) ...")
             diarize.torch_empty_cache()
             turns = diarize.diarize(wav, device="cpu", num_speakers=getattr(args, "num_speakers", None))
     except Exception as e:  # noqa: BLE001 - без диаризации видео всё равно распознаётся, просто одним спикером

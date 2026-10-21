@@ -51,10 +51,16 @@ def load_pipeline(device: str | None = None):
     # (UnpicklingError). Модель официальная, с Hugging Face, поэтому возвращаем прежнее поведение torch.load.
     os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
     if dev not in _pipelines:
+        from importlib.metadata import version
+        # pyannote.audio 4.x переименовал use_auth_token в token
+        auth = {"token": token} if int(version("pyannote.audio").split(".")[0]) >= 4 else {"use_auth_token": token}
         try:
-            pipe = Pipeline.from_pretrained(MODEL, use_auth_token=token)
-        except TypeError:  # pyannote.audio 4.x переименовал аргумент
-            pipe = Pipeline.from_pretrained(MODEL, token=token)
+            pipe = Pipeline.from_pretrained(MODEL, **auth)
+        except TypeError as e:
+            if "use_auth_token" in str(e):  # pyannote 3.x с huggingface_hub 1.x
+                raise DiarizationUnavailable(f"huggingface_hub {version('huggingface_hub')} несовместим с pyannote 3.x "
+                                             f"(нужен <1.0): обновите код и пересоберите образ, docker compose up -d --build")
+            raise DiarizationUnavailable(f"не удалось загрузить {MODEL}: {e}")
         except Exception as e:  # нет сети, не приняты условия модели, неверный токен
             raise DiarizationUnavailable(f"не удалось загрузить {MODEL}: {e}")
         if pipe is None:  # 3.x возвращает None, если доступ к модели закрыт
