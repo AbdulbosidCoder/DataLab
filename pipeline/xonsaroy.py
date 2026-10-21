@@ -5,9 +5,8 @@ POST {XONSAROY_BASE_URL}/transcriptions  (multipart: file; Bearer xs_stt_...) ->
 API возвращает только сплошной текст: без таймкодов и без спикеров. Поэтому границы реплик ищутся
 локально (VAD по громкости в wav 16 kHz), каждый кусок 1.5–15 с отправляется отдельно, а ответ
 собирается в том же виде, что у VoiceLab: segments[{start_ms, end_ms, text, speaker}], и дальше
-pipeline.prepare работает как раньше. Если передана диаризация pyannote (turns), куски режутся внутри
-реплик каждого спикера и получают его метку; иначе все куски одного видео получают спикера "0", и разделить
-людей редактор может в студии (переназначение спикера).
+pipeline.prepare работает как раньше. Все куски одного видео получают спикера "0": разделить людей
+редактор может в студии (переназначение спикера).
 
 Ограничения API: 2 одновременных запроса (иначе 429 + Retry-After), 400 MB, 2 часа на файл.
 Повтор только на 429 (ждём Retry-After), 502/503 и обрыв связи; остальные ошибки сразу.
@@ -15,7 +14,6 @@ pipeline.prepare работает как раньше. Если передана
 """
 import array
 import json
-import math
 import os
 import tempfile
 import threading
@@ -199,52 +197,6 @@ def plan_chunks(energy: list[int], min_dur: float, max_dur: float) -> list[tuple
     return out
 
 
-def plan_turn_chunks(energy: list[int], turns: list[dict], min_dur: float,
-                     max_dur: float) -> list[tuple[float, float, str]]:
-    """Куски по репликам спикеров из диаризации: (start, end, speaker), каждый целиком внутри реплики одного человека.
-
-    Подряд идущие реплики одного спикера с паузой до JOIN_GAP, между которыми никто другой не говорит, считаются
-    одной. Внутри реплики куски режутся так же, как без диаризации (паузы по громкости, _best_split), а запас EDGE
-    по краям не заходит в реплику другого спикера. Реплики разных спикеров могут пересекаться: такие куски
-    prepare помечает как наложение.
-    """
-    max_len = int((max_dur - 2 * EDGE) / FRAME)
-    min_len = int(min_dur / FRAME)
-    n, total = len(energy), len(energy) * FRAME
-    regions = speech_regions(energy)
-    merged: list[dict] = []
-    for t in sorted(turns, key=lambda t: t["start"]):
-        p = next((m for m in reversed(merged) if m["speaker"] == t["speaker"]), None)
-        if p and t["start"] - p["end"] <= JOIN_GAP and not any(
-                o["speaker"] != t["speaker"] and o["end"] > p["end"] and o["start"] < t["start"] for o in turns):
-            p["end"] = max(p["end"], t["end"])
-        else:
-            merged.append(dict(t))
-    out = []
-    for m in merged:
-        a, b = int(m["start"] / FRAME), min(n, math.ceil(m["end"] / FRAME))
-        if b <= a:
-            continue
-        # речь внутри реплики по VAD; тихую речь, которую VAD не заметил, берём всей репликой
-        rs = [(max(a, x), min(b, y)) for x, y in regions if x < b and y > a] or [(a, b)]
-        groups: list[list[tuple[int, int]]] = []
-        for r in rs:
-            if groups and (r[0] - groups[-1][-1][1]) * FRAME <= JOIN_GAP:
-                groups[-1].append(r)
-            else:
-                groups.append([r])
-        chunks = [c for g in groups for c in _best_split(g, energy, max_len, min_len)]
-        others = [o for o in turns if o["speaker"] != m["speaker"]]
-        lo = max([o["end"] for o in others if m["start"] - EDGE < o["end"] <= m["start"]], default=m["start"] - EDGE)
-        hi = min([o["start"] for o in others if m["end"] <= o["start"] < m["end"] + EDGE], default=m["end"] + EDGE)
-        for i, (x, y) in enumerate(chunks):
-            start = max(x * FRAME - EDGE, (x + chunks[i - 1][1]) / 2 * FRAME if i else lo, 0.0)
-            end = min(y * FRAME + EDGE, (y + chunks[i + 1][0]) / 2 * FRAME if i + 1 < len(chunks) else hi, total)
-            if end - start >= min_dur:
-                out.append((round(start, 3), round(end, 3), m["speaker"]))
-    return sorted(out)
-
-
 def _cut(src: Path, dst: Path, start: float, end: float) -> None:
     with wave.open(str(src), "rb") as r:
         sr = r.getframerate()
@@ -258,9 +210,8 @@ def _cut(src: Path, dst: Path, start: float, end: float) -> None:
 
 def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
                state_file: str | Path | None = None, concurrency: int | None = None,
-               progress=None, billing: dict | None = None, turns: list[dict] | None = None) -> dict:
-    """Режет wav по паузам (или по репликам спикеров turns из pyannote) и распознаёт каждый кусок
-    (не больше concurrency запросов одновременно).
+               progress=None, billing: dict | None = None) -> dict:
+    """Режет wav по паузам и распознаёт каждый кусок (не больше concurrency запросов одновременно).
 
     Возвращает {provider, transcript, duration_ms, audio_seconds, segments[{start_ms, end_ms, text, speaker}]}.
     Куски, где ничего не распознано (пустой text), в segments не попадают.
@@ -269,35 +220,27 @@ def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
     """
     wav = Path(wav)
     energy, _ = _energies(wav)
-    if turns is None:
-        chunks = [(a, b, "0") for a, b in plan_chunks(energy, min_dur, max_dur)]
-    else:
-        chunks = plan_turn_chunks(energy, turns, min_dur, max_dur)
+    chunks = plan_chunks(energy, min_dur, max_dur)
     opts = {"file": wav.name, "min_dur": min_dur, "max_dur": max_dur, "chunks": len(chunks)}
-    if turns is not None:
-        opts["turns"] = len(turns)
-
-    def key(c: tuple[float, float, str]) -> str:  # без диаризации ключ прежний: старые partial-файлы подходят
-        return f"{c[0]}-{c[1]}" if turns is None else f"{c[0]}-{c[1]}-{c[2]}"
     state_path = Path(state_file) if state_file else None
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path and state_path.exists() else {}
     if state.get("opts") != opts:
         state = {"opts": opts, "done": {}}
     lock = threading.Lock()
-    todo = [c for c in chunks if key(c) not in state["done"]]
+    todo = [c for c in chunks if f"{c[0]}-{c[1]}" not in state["done"]]
     workers = max(1, min(concurrency or int(os.environ.get("XONSAROY_MAX_CONCURRENT", MAX_CONCURRENT)), MAX_CONCURRENT))
 
     with tempfile.TemporaryDirectory() as tmp:
-        def work(c: tuple[float, float, str]) -> None:
-            part = Path(tmp) / f"{wav.stem}_{int(c[0] * 1000):08d}_{int(c[1] * 1000):08d}_{c[2]}.wav"
-            _cut(wav, part, c[0], c[1])
+        def work(c: tuple[float, float]) -> None:
+            part = Path(tmp) / f"{wav.stem}_{int(c[0] * 1000):08d}_{int(c[1] * 1000):08d}.wav"
+            _cut(wav, part, *c)
             res = post_file(part)
             part.unlink(missing_ok=True)
             with lock:
                 if billing is not None:
                     billing["requests"] = billing.get("requests", 0) + 1
                     billing["audio_seconds"] = billing.get("audio_seconds", 0.0) + (res.get("audio_seconds") or c[1] - c[0])
-                state["done"][key(c)] = {"text": (res.get("text") or "").strip(),
+                state["done"][f"{c[0]}-{c[1]}"] = {"text": (res.get("text") or "").strip(),
                                                    "audio_seconds": res.get("audio_seconds")}
                 if state_path:
                     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,13 +256,12 @@ def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
             pool.shutdown(wait=True, cancel_futures=True)  # после ошибки остальные куски не отправляем
 
     segments = []
-    for c in chunks:
-        text = state["done"][key(c)]["text"]
+    for a, b in chunks:
+        text = state["done"][f"{a}-{b}"]["text"]
         if text:
-            segments.append({"start_ms": int(c[0] * 1000), "end_ms": int(c[1] * 1000), "text": text, "speaker": c[2]})
+            segments.append({"start_ms": int(a * 1000), "end_ms": int(b * 1000), "text": text, "speaker": "0"})
     if state_path:
         state_path.unlink(missing_ok=True)
-    return {"provider": "xonsaroy", "diarization": "vad" if turns is None else "pyannote",
-            "transcript": " ".join(s["text"] for s in segments),
+    return {"provider": "xonsaroy", "transcript": " ".join(s["text"] for s in segments),
             "duration_ms": int(len(energy) * FRAME * 1000),
-            "audio_seconds": round(sum(c[1] - c[0] for c in chunks), 3), "segments": segments}
+            "audio_seconds": round(sum(b - a for a, b in chunks), 3), "segments": segments}
