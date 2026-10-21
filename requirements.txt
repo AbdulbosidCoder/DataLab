@@ -2,3 +2,5 @@ requests>=2.31
 fastapi>=0.115
 uvicorn>=0.29
 python-multipart>=0.0.9
+# локальный Whisper (STT_PROVIDER=whisper), см. pipeline/whisper_stt.py
+faster-whisper>=1.1

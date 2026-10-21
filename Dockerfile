@@ -25,6 +25,8 @@ COPY app/ app/
 COPY pipeline/ pipeline/
 
 ENV PYTHONUNBUFFERED=1 DATA_DIR=/data
+# faster-whisper (ctranslate2) сам не находит cuDNN/cuBLAS из pip-пакетов nvidia, которые пришли вместе с torch
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib
 # модель pyannote скачивается один раз и хранится в data/.cache, а не теряется при пересборке контейнера
 ENV HF_HOME=/data/.cache/huggingface
 # Видео и результаты лежат в /data (монтируется с хоста), ключ приходит из env (.env через compose).

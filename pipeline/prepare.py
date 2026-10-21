@@ -36,14 +36,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import db  # noqa: E402
-from pipeline import diarize, usage, voicelab, xonsaroy  # noqa: E402
+from pipeline import diarize, usage, voicelab, whisper_stt, xonsaroy  # noqa: E402
 
 MEDIA_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4a", ".mp3", ".wav", ".ogg", ".flac"}
 SAMPLE_RATE = 16000
 PAD = 0.05          # запас по краям сегмента, с
 OVERLAP_MIN = 0.1   # пересечение с другим спикером, после которого сегмент считается наложением, с
-PROVIDERS = ("xonsaroy", "voicelab")
-STTError = (voicelab.VoiceLabError, xonsaroy.XonsaroyError)
+PROVIDERS = ("xonsaroy", "voicelab", "whisper")
+STTError = (voicelab.VoiceLabError, xonsaroy.XonsaroyError, whisper_stt.WhisperError)
 
 
 def stt_provider(args) -> str:
@@ -92,7 +92,7 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
     if cache.exists() and not args.force:
         print(f"  кэш: {cache.name}")
         return json.loads(cache.read_text(encoding="utf-8"))
-    if stt_provider(args) == "xonsaroy":
+    if stt_provider(args) in ("xonsaroy", "whisper"):
         return get_xonsaroy(wav, cache, args)
     with tempfile.TemporaryDirectory() as tmp:
         f = upload_file(wav, args.upload_format, Path(tmp))
@@ -161,7 +161,11 @@ def get_xonsaroy(wav: Path, cache: Path, args) -> dict:
     """Xonsaroy без кредитов: в журнал расхода пишутся минуты аудио и число запросов за этот запуск
     (как в дашборде Xonsaroy). Упавший посередине запуск тоже пишется: отправленные куски уже потрачены."""
     turns = get_turns(wav, cache, args)
-    print("  Xonsaroy: " + ("распознавание реплик спикеров ..." if turns is not None else "поиск пауз и распознавание кусков ..."))
+    local = stt_provider(args) == "whisper"  # те же куски, но распознаёт локальный Whisper, а не API Xonsaroy
+    name = "Whisper" if local else "Xonsaroy"
+    if local and turns is not None:
+        diarize.torch_empty_cache()  # pyannote больше не нужен: видеопамять под Whisper
+    print(f"  {name}: " + ("распознавание реплик спикеров ..." if turns is not None else "поиск пауз и распознавание кусков ..."))
     last, bill = [0.0], {}
     on_progress = getattr(args, "on_progress", None)  # веб-сервер показывает ход в сообщении задачи
 
@@ -170,24 +174,25 @@ def get_xonsaroy(wav: Path, cache: Path, args) -> dict:
             on_progress(f"Распознавание: {done}/{total} кусков, отправлено {b.get('audio_seconds', 0) / 60:.1f} мин")
         if time.time() - last[0] > 10 or done == total:
             last[0] = time.time()
-            print(f"  Xonsaroy: {done}/{total} кусков")
+            print(f"  {name}: {done}/{total} кусков")
 
     def record(event: str) -> None:
         if bill.get("requests"):
             usage.record(cache.parent.parent, wav.stem, event, bill["audio_seconds"], None, wav.name,
-                         provider="xonsaroy", requests=bill["requests"])
+                         provider="whisper" if local else "xonsaroy", requests=bill["requests"])
 
     try:
         result = xonsaroy.transcribe(wav, min_dur=args.min_dur, max_dur=args.max_dur, billing=bill,
-                                     state_file=cache.parent / f"{wav.stem}.xonsaroy.partial.json", progress=progress,
-                                     turns=turns)
-    except xonsaroy.XonsaroyError:
+                                     state_file=cache.parent / f"{wav.stem}.{name.lower()}.partial.json",
+                                     progress=progress, turns=turns,
+                                     **({"post": whisper_stt.post_file, "provider": "whisper", "concurrency": 1} if local else {}))
+    except (xonsaroy.XonsaroyError, whisper_stt.WhisperError):
         record("partial")
         raise
     record("charged")
     if getattr(args, "diarization_error", None):
         result["diarization_error"] = args.diarization_error
-    print(f"  Xonsaroy: отправлено {bill.get('audio_seconds', 0) / 60:.1f} мин, запросов {bill.get('requests', 0)}, "
+    print(f"  {name}: отправлено {bill.get('audio_seconds', 0) / 60:.1f} мин, запросов {bill.get('requests', 0)}, "
           f"распознано кусков {len(result['segments'])}")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

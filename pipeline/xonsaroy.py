@@ -258,7 +258,8 @@ def _cut(src: Path, dst: Path, start: float, end: float) -> None:
 
 def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
                state_file: str | Path | None = None, concurrency: int | None = None,
-               progress=None, billing: dict | None = None, turns: list[dict] | None = None) -> dict:
+               progress=None, billing: dict | None = None, turns: list[dict] | None = None,
+               post=None, provider: str = "xonsaroy") -> dict:
     """Режет wav по паузам (или по репликам спикеров turns из pyannote) и распознаёт каждый кусок
     (не больше concurrency запросов одновременно).
 
@@ -286,12 +287,13 @@ def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
     lock = threading.Lock()
     todo = [c for c in chunks if key(c) not in state["done"]]
     workers = max(1, min(concurrency or int(os.environ.get("XONSAROY_MAX_CONCURRENT", MAX_CONCURRENT)), MAX_CONCURRENT))
+    post = post or post_file  # другой распознаватель кусков (локальный Whisper): тот же ответ {text, audio_seconds}
 
     with tempfile.TemporaryDirectory() as tmp:
         def work(c: tuple[float, float, str]) -> None:
             part = Path(tmp) / f"{wav.stem}_{int(c[0] * 1000):08d}_{int(c[1] * 1000):08d}_{c[2]}.wav"
             _cut(wav, part, c[0], c[1])
-            res = post_file(part)
+            res = post(part)
             part.unlink(missing_ok=True)
             with lock:
                 if billing is not None:
@@ -319,7 +321,7 @@ def transcribe(wav: str | Path, min_dur: float = 1.5, max_dur: float = 15.0,
             segments.append({"start_ms": int(c[0] * 1000), "end_ms": int(c[1] * 1000), "text": text, "speaker": c[2]})
     if state_path:
         state_path.unlink(missing_ok=True)
-    return {"provider": "xonsaroy", "diarization": "vad" if turns is None else "pyannote",
+    return {"provider": provider, "diarization": "vad" if turns is None else "pyannote",
             "transcript": " ".join(s["text"] for s in segments),
             "duration_ms": int(len(energy) * FRAME * 1000),
             "audio_seconds": round(sum(c[1] - c[0] for c in chunks), 3), "segments": segments}
