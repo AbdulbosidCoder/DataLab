@@ -6,13 +6,18 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt requirements-diarization.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Медленный или нестабильный интернет: долгий таймаут и повторы, а скачанные пакеты остаются в кэше BuildKit,
+# так что после обрыва повторная сборка не качает torch (~3 ГБ) заново.
+ENV PIP_DEFAULT_TIMEOUT=300 PIP_RETRIES=10
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 # Диаризация pyannote: torch 2.6 с CUDA 12.4 (на Linux так ставится с PyPI; без видеокарты работает на cpu), образ ~10 ГБ.
 # Образ без неё (меньше, видео режется только по паузам): DIARIZATION=0 docker compose build
 ARG DIARIZATION=1
-RUN if [ "$DIARIZATION" = "1" ]; then \
-        pip install --no-cache-dir torch==2.6.0 torchaudio==2.6.0 \
-        && pip install --no-cache-dir -r requirements-diarization.txt; \
+RUN --mount=type=cache,target=/root/.cache/pip if [ "$DIARIZATION" = "1" ]; then \
+        pip install torch==2.6.0 torchaudio==2.6.0; \
+    fi
+RUN --mount=type=cache,target=/root/.cache/pip if [ "$DIARIZATION" = "1" ]; then \
+        pip install -r requirements-diarization.txt; \
     fi
 COPY app/ app/
 COPY pipeline/ pipeline/
