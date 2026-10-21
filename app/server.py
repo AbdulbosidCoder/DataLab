@@ -142,9 +142,13 @@ async def upload(file: UploadFile = File(...)):
     while dst.exists():  # одинаковые имена не перезаписываем
         dst, i = UPLOADS / f"{stem}_{i}{ext}", i + 1
     h = hashlib.sha256()
-    with dst.open("wb") as f:
-        while chunk := await file.read(1 << 20):
-            f.write(chunk); h.update(chunk)
+    try:
+        with dst.open("wb") as f:
+            while chunk := await file.read(1 << 20):
+                f.write(chunk); h.update(chunk)
+    except BaseException:  # загрузка оборвалась: недописанный файл без задачи не оставляем
+        dst.unlink(missing_ok=True)
+        raise
     with conn() as c:
         # тот же файл уже загружали: не ставим в очередь, STT не вызывается
         dup = c.execute("SELECT filename, video FROM jobs WHERE sha256 = ? AND status != 'error' ORDER BY id LIMIT 1",
