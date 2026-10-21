@@ -312,29 +312,69 @@ drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
 drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); uploadFiles(e.dataTransfer.files); };
 
+// Файл уходит частями по 32 МБ: Cloudflare не пропускает запрос больше 100 МБ. XHR, а не fetch: у fetch нет
+// прогресса отправки. После обрыва связи часть повторяется, сервер отвечает, с какого байта продолжать.
+const PART = 32 * 2 ** 20;
+function sendPart(f, id, offset, onProgress) {
+  return new Promise((resolve, reject) => {
+    const q = new URLSearchParams({ upload_id: id, name: f.name, offset, size: f.size });
+    const x = new XMLHttpRequest();
+    x.open("POST", `/api/upload/part?${q}`);
+    x.upload.onprogress = (e) => onProgress(offset + e.loaded);
+    x.onload = () => {
+      let body = {}; try { body = JSON.parse(x.responseText); } catch {}
+      if (x.status >= 200 && x.status < 300) return resolve(body);
+      const err = new Error(body.detail || `HTTP ${x.status} ${x.statusText}`.trim());
+      err.fatal = true; reject(err);
+    };
+    x.onerror = () => reject(new Error("соединение оборвалось"));
+    x.send(f.slice(offset, offset + PART));
+  });
+}
+
+async function sendFile(f) {
+  const id = crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : `${Date.now()}${Math.random().toString(36).slice(2)}`;
+  const mb = (n) => (n / 2 ** 20).toFixed(0);
+  const show = (n) => $("upmsg").textContent = `Загрузка ${f.name}: ${Math.floor(100 * n / (f.size || 1))}% (${mb(n)} из ${mb(f.size)} МБ)`;
+  let offset = 0, fails = 0;
+  for (;;) {
+    let r;
+    try { r = await sendPart(f, id, offset, show); fails = 0; }
+    catch (e) {
+      if (e.fatal || ++fails > 5) throw new Error(`${e.message}, файл не сохранён`);
+      $("upmsg").textContent = `${f.name}: ${e.message}, повтор через ${2 * fails} с…`;
+      await new Promise((ok) => setTimeout(ok, 2000 * fails));
+      continue;  // сервер ответит, сколько байт уже дошло
+    }
+    if (r.id) return r;  // последняя часть: файл собран и поставлен в очередь
+    offset = r.offset; show(offset);
+  }
+}
+
 async function uploadFiles(files) {
   for (const f of files) {
     $("upmsg").textContent = `Загрузка ${f.name}…`;
-    const fd = new FormData(); fd.append("file", f);
     try {
-      const r = await api("/api/upload", { method: "POST", body: fd });
+      const r = await sendFile(f);
       $("upmsg").textContent = r.retried ? `${f.name}: повтор упавшей задачи, распознанное заново не отправится` : `${f.name}: в очереди на распознавание`;
     }
-    catch (e) { $("upmsg").textContent = `Ошибка: ${e.message}`; }
+    catch (e) { $("upmsg").textContent = `${f.name}: ошибка: ${e.message}`; }
   }
   $("file").value = ""; refreshJobs();
 }
 
-let jobsActive = false;
+let jobsActive = false, doneJobs = null;
 async function refreshJobs() {
   const jobs = await api("/api/jobs");
   const st = { queued: "в очереди", processing: "обработка…", done: "готово", error: "ошибка", duplicate: "дубликат" };
   const hidden = JSON.parse(store.get("hiddenJobs") || "[]");
-  const shown = jobs.filter((j) => j.status !== "done" && !hidden.includes(j.id)).slice(0, 8);
+  // готовое видео без сегментов в список видео не попадает, поэтому его задачу оставляем на виду
+  const empty = (j) => j.status === "done" && !j.segments;
+  const shown = jobs.filter((j) => (j.status !== "done" || empty(j)) && !hidden.includes(j.id)).slice(0, 8);
   $("jobs").innerHTML = shown.map((j) => `<div class="job"><div class="jrow"><span class="jname" title="${esc(j.filename)}">${esc(j.filename)}</span>
     ${j.status === "error" ? `<button class="jx" data-retry="${j.id}" title="Повторить. Уже распознанное заново не отправится">↻ Повторить</button>` : ""}
-    ${j.status === "error" || j.status === "duplicate" ? `<button class="jx" data-job="${j.id}" title="Скрыть">✕</button>` : ""}</div>
-    <span class="st-${j.status}">${st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
+    ${j.status === "error" || j.status === "duplicate" || empty(j) ? `<button class="jx" data-job="${j.id}" title="Скрыть">✕</button>` : ""}</div>
+    <span class="st-${empty(j) ? "error" : j.status}">${empty(j) ? "готово, но сегментов нет" : st[j.status] || j.status}</span> <span class="muted">${esc(j.message || "")}</span></div>`).join("");
   document.querySelectorAll("[data-retry]").forEach((b) => b.onclick = async () => {
     b.disabled = true;
     try { await api(`/api/jobs/${b.dataset.retry}/retry`, { method: "POST" }); } catch (e) { alert(e.message); }
@@ -344,7 +384,11 @@ async function refreshJobs() {
     store.set("hiddenJobs", JSON.stringify([...hidden, +b.dataset.job].slice(-200))); refreshJobs();
   });
   const active = jobs.some((j) => j.status === "queued" || j.status === "processing");
-  if (jobsActive && !active) { await refreshStats(); if (!video && jobs[0]?.video) openVideo(jobs[0].video); else if (video) loadTimeline(true); }
+  // задача могла завершиться между опросами, так и не показавшись «в обработке»: сверяем и список готовых
+  const done = jobs.filter((j) => j.status === "done").map((j) => j.id).join();
+  const finished = doneJobs !== null && done !== doneJobs;
+  doneJobs = done;
+  if ((jobsActive || finished) && !active) { await refreshStats(); if (!video && jobs[0]?.video) openVideo(jobs[0].video); else if (video) loadTimeline(true); }
   jobsActive = active;
 }
 
