@@ -5,7 +5,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt requirements-diarization.txt ./
+COPY requirements.txt ./
 # Медленный или нестабильный интернет: долгий таймаут и повторы, а скачанные пакеты остаются в кэше BuildKit,
 # так что после обрыва повторная сборка не качает torch (~3 ГБ) заново.
 ENV PIP_DEFAULT_TIMEOUT=300 PIP_RETRIES=10
@@ -16,6 +16,8 @@ ARG DIARIZATION=1
 RUN --mount=type=cache,target=/root/.cache/pip if [ "$DIARIZATION" = "1" ]; then \
         pip install torch==2.6.0 torchaudio==2.6.0; \
     fi
+# список копируется после torch: правка версий pyannote не пересобирает слой с torch
+COPY requirements-diarization.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip if [ "$DIARIZATION" = "1" ]; then \
         pip install -r requirements-diarization.txt; \
     fi
