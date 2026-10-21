@@ -3,8 +3,5 @@
 # pyannote 3.x, а не 4.x: 4.x требует torch>=2.8 и torchcodec, который на Windows без ffmpeg-библиотек не ставится.
 # torchaudio<2.9: в 2.9 убран torchaudio.AudioMetaData, и pyannote.audio 3.4 не импортируется.
 pyannote.audio==3.4.0
-# huggingface_hub 1.x убрал аргумент use_auth_token, которым pyannote 3.x скачивает модели:
-# from_pretrained падает с TypeError, и диаризация не запускается
-huggingface_hub>=0.13,<1.0
 torch>=2.2,<2.9
 torchaudio>=2.2,<2.9
