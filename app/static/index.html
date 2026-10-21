@@ -312,25 +312,43 @@ drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
 drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); uploadFiles(e.dataTransfer.files); };
 
-// XHR, а не fetch: у fetch нет прогресса отправки, а большое видео через туннель грузится минутами
-function sendFile(f) {
+// Файл уходит частями по 32 МБ: Cloudflare не пропускает запрос больше 100 МБ. XHR, а не fetch: у fetch нет
+// прогресса отправки. После обрыва связи часть повторяется, сервер отвечает, с какого байта продолжать.
+const PART = 32 * 2 ** 20;
+function sendPart(f, id, offset, onProgress) {
   return new Promise((resolve, reject) => {
-    const fd = new FormData(); fd.append("file", f);
+    const q = new URLSearchParams({ upload_id: id, name: f.name, offset, size: f.size });
     const x = new XMLHttpRequest();
-    x.open("POST", "/api/upload");
-    x.upload.onprogress = (e) => { if (e.lengthComputable)
-      $("upmsg").textContent = `Загрузка ${f.name}: ${Math.floor(100 * e.loaded / e.total)}% из ${(e.total / 2 ** 20).toFixed(0)} МБ`; };
+    x.open("POST", `/api/upload/part?${q}`);
+    x.upload.onprogress = (e) => onProgress(offset + e.loaded);
     x.onload = () => {
       let body = {}; try { body = JSON.parse(x.responseText); } catch {}
       if (x.status >= 200 && x.status < 300) return resolve(body);
-      // 413 приходит от Cloudflare (HTML, не JSON): до сервера файл не дошёл
-      if (x.status === 413) return reject(new Error(`файл ${(f.size / 2 ** 20).toFixed(0)} МБ больше лимита Cloudflare (100 МБ). ` +
-        "Загрузите его через http://localhost:8000 на сервере или положите в data/videos и запустите docker compose run --rm prepare"));
-      reject(new Error(body.detail || `HTTP ${x.status} ${x.statusText}`.trim()));
+      const err = new Error(body.detail || `HTTP ${x.status} ${x.statusText}`.trim());
+      err.fatal = true; reject(err);
     };
-    x.onerror = () => reject(new Error("соединение оборвалось, файл не сохранён"));
-    x.send(fd);
+    x.onerror = () => reject(new Error("соединение оборвалось"));
+    x.send(f.slice(offset, offset + PART));
   });
+}
+
+async function sendFile(f) {
+  const id = crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : `${Date.now()}${Math.random().toString(36).slice(2)}`;
+  const mb = (n) => (n / 2 ** 20).toFixed(0);
+  const show = (n) => $("upmsg").textContent = `Загрузка ${f.name}: ${Math.floor(100 * n / (f.size || 1))}% (${mb(n)} из ${mb(f.size)} МБ)`;
+  let offset = 0, fails = 0;
+  for (;;) {
+    let r;
+    try { r = await sendPart(f, id, offset, show); fails = 0; }
+    catch (e) {
+      if (e.fatal || ++fails > 5) throw new Error(`${e.message}, файл не сохранён`);
+      $("upmsg").textContent = `${f.name}: ${e.message}, повтор через ${2 * fails} с…`;
+      await new Promise((ok) => setTimeout(ok, 2000 * fails));
+      continue;  // сервер ответит, сколько байт уже дошло
+    }
+    if (r.id) return r;  // последняя часть: файл собран и поставлен в очередь
+    offset = r.offset; show(offset);
+  }
 }
 
 async function uploadFiles(files) {

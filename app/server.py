@@ -21,6 +21,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app import bundle, db
@@ -127,37 +128,36 @@ def _start_worker() -> None:
     exports = DATA / "exports"  # недособранные архивы и ссылки для скачивания от прошлого запуска
     for p in [*exports.glob(".*.part"), *exports.glob(".serve/*.zip")]:
         p.unlink(missing_ok=True)
+    for p in PARTS.glob("*.part"):  # брошенные загрузки частями старше суток
+        if time.time() - p.stat().st_mtime > 86400:
+            p.unlink(missing_ok=True)
     threading.Thread(target=_worker, daemon=True).start()
 
 
 # ---------- загрузка ----------
 
-@app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
-    name = Path(file.filename or "file").name
+def _target(filename: str | None) -> Path:
+    name = Path(filename or "file").name
     if Path(name).suffix.lower() not in prepare.MEDIA_EXT:
         raise HTTPException(400, f"Неподдерживаемый формат: {Path(name).suffix}")
     stem, ext = prepare.safe_name(Path(name).stem), Path(name).suffix.lower()
     dst, i = UPLOADS / f"{stem}{ext}", 1
     while dst.exists():  # одинаковые имена не перезаписываем
         dst, i = UPLOADS / f"{stem}_{i}{ext}", i + 1
-    h = hashlib.sha256()
-    try:
-        with dst.open("wb") as f:
-            while chunk := await file.read(1 << 20):
-                f.write(chunk); h.update(chunk)
-    except BaseException:  # загрузка оборвалась: недописанный файл без задачи не оставляем
-        dst.unlink(missing_ok=True)
-        raise
+    return dst
+
+
+def _register(dst: Path, sha256: str) -> dict:
+    """Ставит загруженный файл в очередь, если такой ещё не загружали."""
     with conn() as c:
         # тот же файл уже загружали: не ставим в очередь, STT не вызывается
         dup = c.execute("SELECT filename, video FROM jobs WHERE sha256 = ? AND status != 'error' ORDER BY id LIMIT 1",
-                        (h.hexdigest(),)).fetchone()
+                        (sha256,)).fetchone()
         # тот же файл уже падал с ошибкой: повторяем ту задачу. Имя видео то же, поэтому STT продолжит с места сбоя:
         # VoiceLab ту же расшифровку (Idempotency-Key из transcripts/*.pending.json), Xonsaroy с первого
         # нераспознанного куска (transcripts/*.xonsaroy.partial.json)
         failed = c.execute("SELECT id, filename FROM jobs WHERE sha256 = ? AND status = 'error' ORDER BY id DESC LIMIT 1",
-                           (h.hexdigest(),)).fetchone()
+                           (sha256,)).fetchone()
         if not dup and failed and (UPLOADS / failed["filename"]).exists():
             dst.unlink(missing_ok=True)
             _requeue(c, failed["id"])
@@ -167,9 +167,59 @@ async def upload(file: UploadFile = File(...)):
             raise HTTPException(409, f"Этот файл уже загружен как {dup['filename']}"
                                      f"{' (видео ' + dup['video'] + ')' if dup['video'] else ''}")
         job_id = c.execute("INSERT INTO jobs (filename, status, message, sha256) VALUES (?, 'queued', 'В очереди', ?)",
-                           (dst.name, h.hexdigest())).lastrowid
+                           (dst.name, sha256)).lastrowid
     _jobs.put(job_id)
     return {"id": job_id, "filename": dst.name}
+
+
+@app.post("/api/upload")
+async def upload(file: UploadFile = File(...)):
+    dst, h = _target(file.filename), hashlib.sha256()
+    try:
+        with dst.open("wb") as f:
+            while chunk := await file.read(1 << 20):
+                f.write(chunk); h.update(chunk)
+    except BaseException:  # загрузка оборвалась: недописанный файл без задачи не оставляем
+        dst.unlink(missing_ok=True)
+        raise
+    return _register(dst, h.hexdigest())
+
+
+# Загрузка частями: Cloudflare (бесплатный план) не пропускает запрос больше 100 МБ, а видео бывают по 1 ГБ и больше.
+# Части дописываются в data/.uploads/<id>.part; после обрыва клиент спрашивает, сколько уже дошло, и продолжает с того места.
+PARTS = DATA / ".uploads"
+
+
+@app.post("/api/upload/part")
+async def upload_part(request: Request, upload_id: str, name: str, offset: int, size: int):
+    if not upload_id.isalnum() or len(upload_id) > 64:
+        raise HTTPException(400, "Неверный upload_id")
+    _target(name)  # проверка формата до того, как принимать гигабайты
+    PARTS.mkdir(parents=True, exist_ok=True)
+    part = PARTS / f"{upload_id}.part"
+    have = part.stat().st_size if part.exists() else 0
+    if offset != have:  # часть повторно или не по порядку: сообщаем, с какого байта продолжать
+        return {"offset": have}
+    with part.open("ab") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+    have = part.stat().st_size
+    if have < size:
+        return {"offset": have}
+    if have > size:
+        part.unlink(missing_ok=True)
+        raise HTTPException(400, "Размер файла не совпал: загрузите заново")
+    dst = _target(name)
+    part.rename(dst)
+    return _register(dst, await run_in_threadpool(_sha256, dst))
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _requeue(c: sqlite3.Connection, job_id: int) -> None:
