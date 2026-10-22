@@ -1,11 +1,8 @@
 services:
   web:                      # веб-интерфейс: http://localhost:8000
-    build:
-      context: .
-      args:
-        DIARIZATION: ${DIARIZATION:-1}   # 0 = образ без pyannote
+    build: .
     image: datalab
-    env_file: .env          # XONSAROY_API_KEY=xs_stt_..., HF_TOKEN=hf_... (или STT_PROVIDER=voicelab + VOICELAB_API_KEY)
+    env_file: .env          # XONSAROY_API_KEY=xs_stt_... (или STT_PROVIDER=voicelab + VOICELAB_API_KEY)
     volumes:
       - ./data:/data        # загруженные видео, аудио, сегменты, расшифровки и БД
     ports:
@@ -29,10 +26,7 @@ services:
     restart: unless-stopped
 
   prepare:                  # пакетная обработка data/videos без браузера
-    build:
-      context: .
-      args:
-        DIARIZATION: ${DIARIZATION:-1}
+    build: .
     image: datalab
     profiles: ["cli"]
     env_file: .env

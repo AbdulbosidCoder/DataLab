@@ -1,9 +1,7 @@
 """MP4 -> wav 16 kHz mono -> STT -> сегменты 1.5–15 с -> SQLite + файлы.
 
 STT выбирается переменной STT_PROVIDER в .env (или флагом --provider):
-    xonsaroy (по умолчанию)  локально pyannote делит речь по спикерам (pipeline/diarize.py), реплики режутся
-                             на куски 1.5–15 с, каждый распознаётся отдельно (pipeline/xonsaroy.py); без pyannote
-                             или с --no-diarization нарезка по паузам и один спикер на видео
+    xonsaroy (по умолчанию)  нарезка по паузам локально, каждый кусок распознаётся отдельно (pipeline/xonsaroy.py)
     voicelab                 весь файл целиком, VoiceLab сам режет на реплики и делит спикеров
 
 Пример:
@@ -14,7 +12,6 @@ STT выбирается переменной STT_PROVIDER в .env (или фл�
     segments/<video>/<video>_<start_ms>_<end_ms>.wav нарезанные реплики
     transcripts/<video>.voicelab.json  сегменты от STT (кэш, повторно не отправляется; имя файла историческое,
                                        поле provider говорит, какой сервис его сделал)
-    transcripts/<video>.diarization.json  реплики спикеров от pyannote (кэш, только xonsaroy)
     transcripts/<video>.txt            расшифровка со спикерами и таймкодами
     transcripts/<video>.srt            субтитры
     manifest.jsonl                     все сегменты из БД (audio_filepath, text, speaker, ...)
@@ -36,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import db  # noqa: E402
-from pipeline import diarize, usage, voicelab, xonsaroy  # noqa: E402
+from pipeline import usage, voicelab, xonsaroy  # noqa: E402
 
 MEDIA_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4a", ".mp3", ".wav", ".ogg", ".flac"}
 SAMPLE_RATE = 16000
@@ -116,52 +113,10 @@ def get_transcription(wav: Path, cache: Path, args) -> dict:
     return result
 
 
-def get_turns(wav: Path, cache: Path, args) -> list[dict] | None:
-    """Реплики спикеров от pyannote (кэш transcripts/<video>.diarization.json) или None, если диаризация выключена
-    или недоступна: тогда Xonsaroy режет по паузам, и всё видео получает одного спикера."""
-    args.diarization_error = None
-    if getattr(args, "no_diarization", False):
-        return None
-    path = cache.parent / f"{wav.stem}.diarization.json"
-    if path.exists() and not args.force:
-        return json.loads(path.read_text(encoding="utf-8"))["turns"]
-    on_progress = getattr(args, "on_progress", None)
-    device = getattr(args, "device", None)
-    try:  # видеокарта есть: pyannote на ней; нет: на процессоре, в 5-10 раз медленнее
-        where = diarize.pick_device(device)
-    except Exception:  # noqa: BLE001 - torch не ставится или сломан: причину объяснит diarize() ниже
-        where = "?"
-    where = "на видеокарте" if where.startswith("cuda") else "на процессоре, медленнее" if where == "cpu" else where
-    if on_progress:
-        on_progress(f"Диаризация (pyannote, {where}): кто и когда говорит ...")
-    print(f"  pyannote: диаризация ({where}) ...")
-    try:
-        try:
-            turns = diarize.diarize(wav, device=device, num_speakers=getattr(args, "num_speakers", None))
-        except RuntimeError as e:  # нехватка памяти видеокарты (4 GB на длинном видео): повтор на cpu
-            if "out of memory" not in str(e).lower() or device == "cpu":
-                raise
-            print("  pyannote: не хватило памяти видеокарты, повтор на cpu")
-            if on_progress:
-                on_progress("Диаризация (pyannote, на процессоре: не хватило памяти видеокарты, медленнее) ...")
-            diarize.torch_empty_cache()
-            turns = diarize.diarize(wav, device="cpu", num_speakers=getattr(args, "num_speakers", None))
-    except Exception as e:  # noqa: BLE001 - без диаризации видео всё равно распознаётся, просто одним спикером
-        print(f"  ВНИМАНИЕ: диаризация недоступна ({e}); режу по паузам, все реплики получат SPEAKER_00. "
-              f"Когда pyannote заработает, перезапустите видео с --force", file=sys.stderr)
-        args.diarization_error = str(e)[:300]  # веб-сервер покажет причину в задаче
-        return None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"model": diarize.MODEL, "turns": turns}, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"  pyannote: спикеров {len({t['speaker'] for t in turns})}, реплик {len(turns)}")
-    return turns
-
-
 def get_xonsaroy(wav: Path, cache: Path, args) -> dict:
     """Xonsaroy без кредитов: в журнал расхода пишутся минуты аудио и число запросов за этот запуск
     (как в дашборде Xonsaroy). Упавший посередине запуск тоже пишется: отправленные куски уже потрачены."""
-    turns = get_turns(wav, cache, args)
-    print("  Xonsaroy: " + ("распознавание реплик спикеров ..." if turns is not None else "поиск пауз и распознавание кусков ..."))
+    print("  Xonsaroy: поиск пауз и распознавание кусков ...")
     last, bill = [0.0], {}
     on_progress = getattr(args, "on_progress", None)  # веб-сервер показывает ход в сообщении задачи
 
@@ -179,14 +134,11 @@ def get_xonsaroy(wav: Path, cache: Path, args) -> dict:
 
     try:
         result = xonsaroy.transcribe(wav, min_dur=args.min_dur, max_dur=args.max_dur, billing=bill,
-                                     state_file=cache.parent / f"{wav.stem}.xonsaroy.partial.json", progress=progress,
-                                     turns=turns)
+                                     state_file=cache.parent / f"{wav.stem}.xonsaroy.partial.json", progress=progress)
     except xonsaroy.XonsaroyError:
         record("partial")
         raise
     record("charged")
-    if getattr(args, "diarization_error", None):
-        result["diarization_error"] = args.diarization_error
     print(f"  Xonsaroy: отправлено {bill.get('audio_seconds', 0) / 60:.1f} мин, запросов {bill.get('requests', 0)}, "
           f"распознано кусков {len(result['segments'])}")
     cache.parent.mkdir(parents=True, exist_ok=True)
@@ -414,9 +366,7 @@ def process(src: Path, out: Path, conn, args) -> dict:
     added = db.insert_segments(conn, rows)
     print(f"  сегментов: {len(rows)} (новых в БД: {added}), "
           f"отброшено коротких: {stats['short']}, наложений: {stats['overlap_dropped']}")
-    return {"video": video, "segments": len(rows), "hours": sum(r["duration"] for r in rows) / 3600,
-            "speakers": len({r["speaker"] for r in rows}), "diarization": result.get("diarization"),
-            "diarization_error": result.get("diarization_error"), **stats}
+    return {"video": video, "segments": len(rows), "hours": sum(r["duration"] for r in rows) / 3600, **stats}
 
 
 def write_manifest(conn, out: Path) -> int:
@@ -437,7 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--videos", default="data/videos", help="папка с MP4 (или один файл)")
     ap.add_argument("--out", default="data", help="куда сохранять аудио, сегменты и расшифровки")
     ap.add_argument("--db", default=None, help="путь к SQLite (по умолчанию <out>/speech_lab.db)")
-    ap.add_argument("--env", default=str(ROOT / ".env"), help="файл с ключами (XONSAROY_API_KEY, HF_TOKEN, VOICELAB_API_KEY)")
+    ap.add_argument("--env", default=str(ROOT / ".env"), help="файл с ключами (XONSAROY_API_KEY, VOICELAB_API_KEY)")
     ap.add_argument("--provider", choices=PROVIDERS, default=None,
                     help="сервис STT (по умолчанию STT_PROVIDER из .env, иначе xonsaroy)")
     ap.add_argument("--language", default="uz")
@@ -446,12 +396,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-gap", type=float, default=0.5, help="макс. пауза при склейке реплик, с")
     ap.add_argument("--keep-overlap", action="store_true", help="сохранять наложения со статусом overlap")
     ap.add_argument("--no-speakers", action="store_true", help="не просить VoiceLab разделять спикеров (только voicelab)")
-    ap.add_argument("--no-diarization", action="store_true",
-                    help="не делить спикеров через pyannote, резать по паузам (только xonsaroy)")
-    ap.add_argument("--device", default=None,
-                    help="устройство для pyannote: auto (cuda, если есть), cuda или cpu; по умолчанию DIARIZATION_DEVICE из .env")
-    ap.add_argument("--num-speakers", type=int, default=None,
-                    help="точное число спикеров в видео, если известно (подсказка pyannote)")
     ap.add_argument("--upload-format", choices=["wav", "flac", "mp3"], default="wav",
                     help="в каком формате отправлять аудио в VoiceLab (только voicelab)")
     ap.add_argument("--force", action="store_true", help="заново конвертировать и транскрибировать")
