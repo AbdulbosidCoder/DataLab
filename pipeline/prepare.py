@@ -86,10 +86,16 @@ def upload_file(wav: Path, fmt: str, tmpdir: Path) -> Path:
 
 
 def get_transcription(wav: Path, cache: Path, args) -> dict:
+    provider = stt_provider(args)
     if cache.exists() and not args.force:
-        print(f"  кэш: {cache.name}")
-        return json.loads(cache.read_text(encoding="utf-8"))
-    if stt_provider(args) == "xonsaroy":
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        # расшифровка Xonsaroy лежит под тем же именем, но в ней все реплики одного спикера:
+        # при STT_PROVIDER=voicelab её не берём, а отправляем звук в VoiceLab заново
+        if cached.get("provider", "voicelab") == provider:
+            print(f"  кэш: {cache.name}")
+            return cached
+        print(f"  кэш {cache.name} от {cached.get('provider')}, а STT сейчас {provider}: расшифровываем заново")
+    if provider == "xonsaroy":
         return get_xonsaroy(wav, cache, args)
     with tempfile.TemporaryDirectory() as tmp:
         f = upload_file(wav, args.upload_format, Path(tmp))
