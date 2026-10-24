@@ -1,8 +1,8 @@
 """MP4 -> wav 16 kHz mono -> STT -> сегменты 1.5–15 с -> SQLite + файлы.
 
 STT выбирается переменной STT_PROVIDER в .env (или флагом --provider):
-    xonsaroy (по умолчанию)  нарезка по паузам локально, каждый кусок распознаётся отдельно (pipeline/xonsaroy.py)
-    voicelab                 весь файл целиком, VoiceLab сам режет на реплики и делит спикеров
+    voicelab (по умолчанию)  весь файл целиком, VoiceLab сам режет на реплики и делит спикеров
+    xonsaroy                 нарезка по паузам локально, каждый кусок распознаётся отдельно (pipeline/xonsaroy.py)
 
 Пример:
     python -m pipeline.prepare --videos data/videos --out data
@@ -44,8 +44,8 @@ STTError = (voicelab.VoiceLabError, xonsaroy.XonsaroyError)
 
 
 def stt_provider(args) -> str:
-    """--provider, иначе STT_PROVIDER из окружения/.env, иначе xonsaroy."""
-    p = (getattr(args, "provider", None) or os.environ.get("STT_PROVIDER") or "xonsaroy").strip().lower()
+    """--provider, иначе STT_PROVIDER из окружения/.env, иначе voicelab."""
+    p = (getattr(args, "provider", None) or os.environ.get("STT_PROVIDER") or "voicelab").strip().lower()
     if p not in PROVIDERS:
         raise xonsaroy.XonsaroyError(f"Неизвестный STT_PROVIDER={p}: допустимо {', '.join(PROVIDERS)}")
     return p
@@ -389,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--db", default=None, help="путь к SQLite (по умолчанию <out>/speech_lab.db)")
     ap.add_argument("--env", default=str(ROOT / ".env"), help="файл с ключами (XONSAROY_API_KEY, VOICELAB_API_KEY)")
     ap.add_argument("--provider", choices=PROVIDERS, default=None,
-                    help="сервис STT (по умолчанию STT_PROVIDER из .env, иначе xonsaroy)")
+                    help="сервис STT (по умолчанию STT_PROVIDER из .env, иначе voicelab)")
     ap.add_argument("--language", default="uz")
     ap.add_argument("--min-dur", type=float, default=1.5)
     ap.add_argument("--max-dur", type=float, default=15.0)
