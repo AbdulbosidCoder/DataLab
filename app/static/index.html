@@ -408,8 +408,21 @@ async function refreshStats() {
     <div class="thumb">🎬</div><div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">${esc(x.video)}</div>
     <div class="prog"><i style="width:${x.total ? 100 * x.approved / x.total : 0}%"></i></div>
     <div class="muted" style="font-size:11px">${x.approved}/${x.total} одобрено</div></div>
+    <button class="zip" data-reseg="${esc(x.video)}" title="Заново разделить на спикеров по ответу VoiceLab (кредиты не тратятся)">↻</button>
     <a class="zip" href="/api/export.zip?video=${encodeURIComponent(x.video)}" title="Скачать ZIP: видео, аудио, сегменты, текст" onclick="event.stopPropagation()">⬇ ZIP</a></div>`).join("") || '<div class="empty">Пусто</div>');
   document.querySelectorAll(".clip-item").forEach((el) => el.onclick = () => openVideo(el.dataset.v));
+  document.querySelectorAll("[data-reseg]").forEach((b) => b.onclick = async (e) => {
+    e.stopPropagation();
+    const name = b.dataset.reseg;
+    if (!confirm(`Пересобрать сегменты ${name} по ответу VoiceLab? Правки текста и статусы этого видео будут сброшены.`)) return;
+    b.disabled = true; b.textContent = "…";
+    try {
+      const r = await api(`/api/videos/${encodeURIComponent(name)}/resegment`, { method: "POST" });
+      toast(`${esc(name)}: сегментов ${r.segments}, спикеров ${r.speakers}`);
+      if (name === video) { sel = null; dirty = false; showInspector(null); await loadTimeline(); }
+      await refreshStats();
+    } catch (err) { alert(err.message); b.disabled = false; b.textContent = "↻"; }
+  });
   $("vsort").onchange = (e) => { store.set("videoSort", e.target.value); refreshStats(); };
   if (!data && s.videos.length) openVideo(s.videos.some((x) => x.video === video) ? video : s.videos[0].video);
 }
