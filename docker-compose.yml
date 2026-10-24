@@ -2,7 +2,7 @@ services:
   web:                      # веб-интерфейс: http://localhost:8000
     build: .
     image: datalab
-    env_file: .env          # XONSAROY_API_KEY=xs_stt_... (или STT_PROVIDER=voicelab + VOICELAB_API_KEY)
+    env_file: .env          # VOICELAB_API_KEY=vlk_... (или STT_PROVIDER=xonsaroy + XONSAROY_API_KEY)
     volumes:
       - ./data:/data        # загруженные видео, аудио, сегменты, расшифровки и БД
     ports:
