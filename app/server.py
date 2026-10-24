@@ -85,6 +85,7 @@ def conn():
 # ---------- очередь обработки: по одному файлу за раз ----------
 
 _jobs: "queue.Queue[int]" = queue.Queue()
+_stt_lock = threading.Lock()  # обработка загрузки и пересборка спикеров не идут одновременно
 
 
 def _set_job(job_id: int, **fields) -> None:
@@ -103,7 +104,8 @@ def _worker() -> None:
         try:
             job = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             _set_job(job_id, status="processing", message="Конвертация и распознавание (STT)")
-            res = prepare.process(UPLOADS / job["filename"], DATA, c, args)
+            with _stt_lock:
+                res = prepare.process(UPLOADS / job["filename"], DATA, c, args)
             if res.get("duplicate_of"):  # другой файл, но звук тот же, что у уже расшифрованного видео
                 (UPLOADS / job["filename"]).unlink(missing_ok=True)
                 _set_job(job_id, status="duplicate", video=res["duplicate_of"], segments=0,
@@ -111,7 +113,8 @@ def _worker() -> None:
                 continue
             prepare.write_manifest(c, DATA)
             _set_job(job_id, status="done", video=res["video"], segments=res["segments"],
-                     message=f"Сегментов: {res['segments']}, коротких отброшено: {res['short']}")
+                     message=f"Сегментов: {res['segments']}, спикеров: {res['speakers']}, "
+                             f"коротких отброшено: {res['short']}")
         except Exception as e:  # ошибку показываем в интерфейсе, очередь продолжает работать
             traceback.print_exc()
             _set_job(job_id, status="error", message=str(e)[:500])
@@ -241,6 +244,23 @@ def retry_job(job_id: int):
             raise HTTPException(409, "Файл задачи уже удалён: загрузите видео заново")
         _requeue(c, job_id)
     return {"id": job_id, "status": "queued"}
+
+
+@app.post("/api/videos/{video}/resegment")
+def resegment_video(video: str):
+    """Заново делит видео на спикеров по уже полученному ответу VoiceLab: в STT ничего не отправляется."""
+    if not _stt_lock.acquire(blocking=False):
+        raise HTTPException(409, "Идёт обработка видео: дождитесь окончания очереди")
+    try:
+        args = prepare.build_parser().parse_args(["--out", str(DATA), "--keep-overlap"])
+        with conn() as c:
+            res = prepare.resegment(video, DATA, c, args)
+            prepare.write_manifest(c, DATA)
+    except (FileNotFoundError, voicelab.VoiceLabError) as e:
+        raise HTTPException(409, str(e))
+    finally:
+        _stt_lock.release()
+    return res
 
 
 @app.get("/api/jobs")

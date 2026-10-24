@@ -22,6 +22,7 @@ import array
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -86,10 +87,16 @@ def upload_file(wav: Path, fmt: str, tmpdir: Path) -> Path:
 
 
 def get_transcription(wav: Path, cache: Path, args) -> dict:
+    provider = stt_provider(args)
     if cache.exists() and not args.force:
-        print(f"  кэш: {cache.name}")
-        return json.loads(cache.read_text(encoding="utf-8"))
-    if stt_provider(args) == "xonsaroy":
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        # расшифровка Xonsaroy лежит под тем же именем, но в ней все реплики одного спикера:
+        # при STT_PROVIDER=voicelab её не берём, а отправляем звук в VoiceLab заново
+        if cached.get("provider", "voicelab") == provider:
+            print(f"  кэш: {cache.name}")
+            return cached
+        print(f"  кэш {cache.name} от {cached.get('provider')}, а STT сейчас {provider}: расшифровываем заново")
+    if provider == "xonsaroy":
         return get_xonsaroy(wav, cache, args)
     with tempfile.TemporaryDirectory() as tmp:
         f = upload_file(wav, args.upload_format, Path(tmp))
@@ -334,6 +341,11 @@ def process(src: Path, out: Path, conn, args) -> dict:
     if index.get(video) != fp:
         index[video] = fp
         save_audio_index(out, index)
+    return {"video": video, **segment_video(video, wav, total, result, out, conn, args)}
+
+
+def segment_video(video: str, wav: Path, total: float, result: dict, out: Path, conn, args) -> dict:
+    """Расшифровка -> сегменты: TXT/SRT, wav-куски в segments/<video>/ и строки в БД."""
     utts = raw_utterances(result, video)
     write_transcripts(utts, out / "transcripts" / video)
 
@@ -366,7 +378,47 @@ def process(src: Path, out: Path, conn, args) -> dict:
     added = db.insert_segments(conn, rows)
     print(f"  сегментов: {len(rows)} (новых в БД: {added}), "
           f"отброшено коротких: {stats['short']}, наложений: {stats['overlap_dropped']}")
-    return {"video": video, "segments": len(rows), "hours": sum(r["duration"] for r in rows) / 3600, **stats}
+    return {"segments": len(rows), "speakers": len({r["speaker"] for r in rows}),
+            "hours": sum(r["duration"] for r in rows) / 3600, **stats}
+
+
+def voicelab_result(video: str, out: Path) -> dict:
+    """Уже оплаченный ответ VoiceLab для видео: из кэша, а если там расшифровка Xonsaroy или файла нет,
+    то заново по job_id из usage.jsonl (GET готовой задачи кредитов не тратит)."""
+    cache = out / "transcripts" / f"{video}.voicelab.json"
+    if cache.exists():
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        if cached.get("provider", "voicelab") == "voicelab":
+            return cached
+    jobs = [r["job_id"] for r in usage.load(out)
+            if r.get("video") == video and r.get("event") == "charged" and r.get("job_id")
+            and r.get("provider", "voicelab") == "voicelab"]
+    for job_id in reversed(jobs):  # сначала последняя оплаченная задача
+        try:
+            result = voicelab.wait(job_id, timeout=120)
+        except voicelab.VoiceLabError as e:
+            print(f"  VoiceLab: задачу {job_id} получить не удалось: {e}")
+            continue
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return result
+    raise voicelab.VoiceLabError(f"Для {video} нет ответа VoiceLab: ни в кэше, ни в журнале расхода")
+
+
+def resegment(video: str, out: Path, conn, args) -> dict:
+    """Пересобирает сегменты видео по ответу VoiceLab без новой отправки в STT.
+    Старые сегменты видео (с правками текста и статусами) и имена спикеров удаляются."""
+    wav = out / "audio" / f"{video}.wav"
+    if not wav.exists():
+        raise FileNotFoundError(f"Нет полного аудио {wav.name}: загрузите видео заново")
+    result = voicelab_result(video, out)
+    with wave.open(str(wav), "rb") as r:
+        total = r.getnframes() / r.getframerate()
+    conn.execute("DELETE FROM segments WHERE video = ?", (video,))
+    conn.execute("DELETE FROM speakers WHERE video = ?", (video,))
+    conn.commit()
+    shutil.rmtree(out / "segments" / video, ignore_errors=True)
+    return {"video": video, **segment_video(video, wav, total, result, out, conn, args)}
 
 
 def write_manifest(conn, out: Path) -> int:
